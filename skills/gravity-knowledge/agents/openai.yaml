@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gravity Knowledge"
+  short_description: "Gravity workflow context and patterns"
+  default_prompt: "Use $gravity-knowledge to design or explain a Gravity integration workflow."

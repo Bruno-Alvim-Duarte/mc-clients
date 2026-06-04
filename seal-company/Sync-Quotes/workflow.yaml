@@ -1,0 +1,234 @@
+workflow:
+  name: Acumatica to Hubspot - Sync Quotes
+  id: FijvZugaUDIf
+  version: 0.0.8
+  isActive: false
+  publishedOn: 2026-04-14T14:28:54.000Z
+triggers:
+  - name: Webhook - Acumatica Quote Webhook
+    type: webhook
+    message: Acumatica Quote Webhook
+steps:
+  - stepNumber: 1
+    name: Map - Extract & Validate Webhook Payload
+    input: XUYJz5Kg9ZWl
+    results: 1
+    type: map
+    code: |-
+      const body = input.webhook9ZWL[0].body?.Inserted[0] || {};
+
+      // Extract fields from Acumatica webhook payload
+      const opportunityID = body.OpportunityID || null;
+      const quoteNumber = body.QuoteNbr || null;
+      const quoteStatus = body.Status || null;
+      const quoteDate = body.Date || null;
+      const quoteExpirationDate = body.ExpirationDate || null;
+      const quoteTotal = body.DetailTotal || null;
+      const quoteOwner = body.Owner || null;
+      const quoteDescription = body.Description || null;
+      const isPrimary = body.Primary || null;
+
+      // Validate required field
+      if (!opportunityID) {
+        return {
+          valid: false,
+          error: `Missing Acumatica Opportunity ID on quote ${quoteNumber || "unknown"}`,
+          quoteNumber: quoteNumber || "unknown"
+        };
+      }
+
+      return {
+        valid: true,
+        opportunityID,
+        quoteNumber,
+        quoteStatus,
+        quoteDate,
+        quoteExpirationDate,
+        quoteTotal,
+        quoteOwner,
+        quoteDescription,
+        isPrimary
+      };
+  - stepNumber: 2
+    name: If/Else - Check Payload Valid
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].valid] = true"
+  - stepNumber: 3
+    name: If/Else - Check Is Primary Quote
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].isPrimary] = true"
+  - stepNumber: 4
+    name: Map - Build Search Filter
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const payload = input.mapZPIH[0];
+
+      return [
+        {
+          filters: [
+            {
+              propertyName: "acumatica_opportunity_id",
+              operator: "EQ",
+              value: String(payload.opportunityID)
+            }
+          ]
+        }
+      ];
+  - stepNumber: 5
+    name: Hubspot App - Search HubSpot Deal by Opp ID
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 4: input]"
+  - stepNumber: 6
+    name: If/Else - Check Deal Found
+    results: 1
+    type: conditional
+    condition: "[Step 5: input[0].id] nempty null"
+  - stepNumber: 7
+    name: Map - Build Deal Update Payload
+    input: Step 1, Step 5
+    results: 1
+    type: map
+    code: |-
+      const payload = input.mapZPIH[0];
+      const searchResult = input.hubspotAppSearchDealsMCYV[0];
+
+      const dealId = searchResult.id;
+
+      // Convert datetime string to epoch milliseconds
+      // Returns null for missing or invalid dates
+      function toEpochMs(dateStr) {
+        if (!dateStr) return null;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return null;
+        // Normalize to 12:00:00 UTC on the same date
+        const normalized = new Date(d.toISOString().split('T')[0] + 'T00:00:00.000Z');
+        return normalized.getTime();
+      }
+
+      // Acumatica Owner ID -> HubSpot Owner ID
+      const acumaticaOwnerToHubspot = {
+        '127053': '7321575',       // TIMOTHY NIX
+        '116638': '26951785',      // Walter Martinez
+        '130063': '80596682',      // Ashley Nelson
+        '130077': '80771250',      // Tara Cabaniss
+        '130078': '80771273',      // Tamara Wood
+        '127386': '185671876',     // Britt Cabral
+        '129187': '204240096',     // Larry Woods
+        '125541': '205658988',     // Jolene Ramos
+        '116616': '215835954',     // Jim Whorton
+        '116628': '273828897',     // Robert Lee
+        '128351': '601051234',     // Luke Starry
+        '127535': '690603772',     // Peggy Cole
+        '129520': '928040643',     // Jeff Patterson
+        '116631': '1116181631',    // Ryan Sperry
+        '129089': '1215258143',    // Jeff Price
+        '116629': '1502551068',    // Rachel Motte
+        '125930': '1716729933',    // Tyler Garza
+        '116609': '1772285574',    // Chris Barger
+        '116612': '1919764494',    // Greg Lohse
+        '116606': '1964590240',    // David Oldham
+        '129262': '2086206935',    // Chris Hebert
+      };
+
+      const acumaticaOwnerId = String(payload.quoteOwner);
+      const hubspotOwnerId = acumaticaOwnerToHubspot[acumaticaOwnerId] || null;
+
+      const properties = {
+        amount: payload.quoteTotal != null ? String(payload.quoteTotal) : null,
+        primary_quote_amount: payload.quoteTotal != null ? String(payload.quoteTotal) : null,
+        primary_quote_number: payload.quoteNumber != null ? String(payload.quoteNumber) : null,
+        primary_quote_status: payload.quoteStatus != null ? String(payload.quoteStatus).toLowerCase() : null,
+        primary_quote_date: toEpochMs(payload.quoteDate),
+        primary_quote_expiration_date: toEpochMs(payload.quoteExpirationDate),
+        primary_quote_owner: payload.quoteOwner != null ? String(payload.quoteOwner) : null,
+        primary_quote_description: payload.quoteDescription != null ? String(payload.quoteDescription) : null
+      };
+
+      if (hubspotOwnerId) {
+        properties.primary_quote_owner = hubspotOwnerId;
+      }
+
+      return {
+        dealId,
+        properties
+      };
+  - stepNumber: 8
+    name: Hubspot App - Update HubSpot Deal with Quote Data
+    results: 1
+    type: action
+    args:
+      - label: Deal Id
+        value: "[Step 7: input[0].dealId]"
+  - stepNumber: 9
+    name: "Flow Control - Success: Deal Updated"
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Successfully synced primary quote to HubSpot deal. Quote Number: "
+  - stepNumber: 10
+    name: "Flow Control - Alert: No HubSpot Deal Found"
+    type: action
+    args:
+      - label: Action
+        value: endAsFailure
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: error
+      - label: Log Message
+        value: "No HubSpot deal found for Acumatica Opportunity ID: "
+      - label: Send Email
+        value: "true"
+      - label: Email Subject
+        value: "Workflow Failure: No HubSpot Deal Found for Opportunity"
+      - label: Email Body
+        value: No matching HubSpot deal was found for the following Acumati...
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com
+  - stepNumber: 11
+    name: "Flow Control - Skip: Not Primary Quote"
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Quote is not the primary quote. Skipping sync. Quote Number: "
+  - stepNumber: 12
+    name: "Flow Control - Alert: Invalid Payload"
+    type: action
+    args:
+      - label: Action
+        value: endAsFailure
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: error
+      - label: Log Message
+        value: "Invalid payload - Missing Acumatica Opportunity ID on quote. Quote Number: "
+      - label: Send Email
+        value: "true"
+      - label: Email Subject
+        value: "Workflow Failure: Missing Acumatica Opportunity ID"
+      - label: Email Body
+        value: |-
+          The workflow has failed due to an invalid payload.
+
+          Error: I...
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com

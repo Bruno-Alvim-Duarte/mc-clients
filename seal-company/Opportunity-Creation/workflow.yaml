@@ -1,0 +1,611 @@
+workflow:
+  name: HubSpot to Acumatica - Opportunity Creation
+  id: QvreVKqH5g3G
+  version: 1.0.36
+  isActive: false
+  publishedOn: 2026-05-27T22:57:57.000Z
+triggers:
+  - name: Webhook - HubSpot Deal Webhook
+    type: webhook
+    message: HubSpot Deal Webhook
+steps:
+  - stepNumber: 1
+    name: Map - Build Deal Filter from Webhook
+    input: H9lm5sWHnJLb
+    results: 1
+    type: map
+    code: |-
+      // Get the webhook data from input
+      const webhookData = input.webhookNJLB?.[0];
+
+      // The webhook body is an array of multiple events (property changes, associations, creation, etc.)
+      // We need to scan ALL items to find the objectId and check if ANY event was user-initiated
+      const bodyItems = webhookData?.body || [];
+
+      // Extract objectId from the first item that has one (objectId for property changes, fromObjectId for associations)
+      const objectId = bodyItems.reduce((id, item) => {
+        if (id) return id;
+        return item?.objectId || item?.fromObjectId || null;
+      }, null);
+
+      // Loop prevention: check if ANY event in the batch has a userId sourceId
+      // Some events (like association changes) don't have sourceId at all, but the
+      // accompanying property change events do. If at least one is user-initiated, it's legit.
+      const isUserChange = bodyItems.some(item => {
+        const sid = item?.sourceId || '';
+        return String(sid).startsWith('userId:');
+      });
+
+      // Create the filterGroups array with the required structure
+      // Convert objectId to string as HubSpot expects string values
+      return {
+        filterGroups:[{
+          filters: [{
+            propertyName: "hs_object_id",
+            operator: "EQ",
+            value: String(objectId)
+          }]
+        }],
+        dealId: String(objectId),
+        isUserChange: isUserChange
+      };
+  - stepNumber: 2
+    name: Map - Build Lock Key
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const dealId = input.mapNABN?.[0]?.dealId || input.mapNABN?.dealId || '';
+      const lockKey = 'hubspot_deal_' + dealId + '_acumatica_sync';
+      return [{ lockKey, dealId }];
+  - stepNumber: 3
+    name: Map - Check if Lock Exists
+    input: Step 2
+    results: 1
+    type: map
+    code: |-
+      // Get the lock key from the Build Lock Key step
+      const lockKey = input.mapFGWE?.[0]?.lockKey || '';
+
+      // Get the lockedKeys directly from memory
+      const memoryValue = input.memory?.lockedKeys;
+
+      // Parse the memory value as a JSON array, defaulting to empty array
+      let lockedKeys = [];
+      try {
+        const parsed = typeof memoryValue === 'string' ? JSON.parse(memoryValue) : memoryValue;
+        if (Array.isArray(parsed)) lockedKeys = parsed;
+      } catch (e) {
+        lockedKeys = [];
+      }
+
+      // Check if the lockKey already exists in the locked keys array
+      const isLocked = lockedKeys.includes(lockKey);
+
+      return [{ isLocked, lockKey, lockedKeys }];
+  - stepNumber: 4
+    name: If/Else - Loop Prevention Check
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].isUserChange] ne true"
+  - stepNumber: 5
+    name: Flow Control - Stop - Self-Triggered Update Detected
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Loop prevention: Skipping workflow - change was not user-ini..."
+  - stepNumber: 6
+    name: If/Else - Is Deal Locked?
+    results: 1
+    type: conditional
+    condition: "[Step 3: input[0].isLocked] = true"
+  - stepNumber: 7
+    name: Wait - Wait 10s (Lock Detected)
+    type: wait
+    durationMs: 10000
+  - stepNumber: 8
+    name: Map - Build Updated lockedKeys Array
+    input: Step 3
+    results: 1
+    type: map
+    code: |-
+      // Get the lock key and current lockedKeys from Check if Lock Exists step
+      const lockKey = input.mapGQXB?.[0]?.lockKey || '';
+      const lockedKeys = input.mapGQXB?.[0]?.lockedKeys || [];
+
+      // Add the new lock key to the array
+      const updatedLockedKeys = [...lockedKeys, lockKey];
+
+      return [{ updatedLockedKeys: JSON.stringify(updatedLockedKeys) }];
+  - stepNumber: 9
+    name: Memory - Acquire Lock (Set Memory)
+    results: 1
+    type: memory
+    memory:
+      - key: lockedKeys
+        savesOn: always
+  - stepNumber: 10
+    name: Hubspot App - Search Deal by ObjectId
+    results: 1
+    type: action
+    args:
+      - label: Properties
+        value: dealname, hubspot_owner_id + 6 more
+      - label: Filter Groups
+        value: "[Step 1: input[0].filterGroups[]]"
+  - stepNumber: 11
+    name: If/Else - If Direct Order - Skip Deal
+    results: 1
+    type: conditional
+    condition: "[Step 10: input[0].properties.origin_type] = Direct Order"
+  - stepNumber: 12
+    name: Flow Control - Stop - Direct Order Deal Skipped
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: Skipping deal - origin_type is 'Direct Order'. This deal doe...
+  - stepNumber: 13
+    name: Hubspot App - Get Associated Companies from Deal
+    results: 1
+    type: action
+    args:
+      - label: From Object
+        value: Deals
+      - label: Object Id
+        value: "[Step 10: input[0].id]"
+      - label: To Object Type
+        value: Companies
+  - stepNumber: 14
+    name: Map - Build Company Filter from Association
+    input: Step 13
+    results: 1
+    type: map
+    code: |-
+      const associations = input.hubspotAppGetAssociationsH7I7;
+
+      // Map each association to a filter object
+      return associations.map((association) => ({
+        filters: [
+          {
+            propertyName: "hs_object_id",
+            operator: "EQ",
+            value: String(association?.toObjectId)
+          }
+        ]
+      }));
+  - stepNumber: 15
+    name: Hubspot App - Search Company with Acumatica Details
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 14: input]"
+      - label: Properties
+        value: acumatica_customer_id, domain + 9 more
+  - stepNumber: 16
+    name: Hubspot App - Get Associated Contacts from Deal
+    results: 1
+    type: action
+    args:
+      - label: From Object
+        value: Deals
+      - label: Object Id
+        value: "[Step 10: input[0].id]"
+      - label: To Object Type
+        value: Contacts
+  - stepNumber: 17
+    name: Map - Build Contact Filter from Association
+    input: Step 16
+    results: 1
+    type: map
+    code: |-
+      const associations = input.hubspotAppGetAssociationsZUHM;
+
+      // Map associations to filters array format
+      return associations.map((association) => ({
+        filters: [
+          {
+            propertyName: "hs_object_id",
+            operator: "EQ",
+            value: String(association?.toObjectId)
+          }
+        ]
+      }));
+  - stepNumber: 18
+    name: Hubspot App - Search Contact with Acumatica Details
+    results: 1
+    type: action
+    args:
+      - label: Properties
+        value: acumatica_contact_id, firstname + 4 more
+      - label: Filter Groups
+        value: "[Step 17: input]"
+  - stepNumber: 19
+    name: Map - Map HubSpot Deal to Acumatica Opportunity
+    input: Step 10, Step 15, Step 18
+    results: 1
+    type: map
+    code: |-
+      const deal = input.hubspotAppSearchDealsZ00L?.[0];
+      const company = input.hubspotAppSearchCompaniesWTEV?.[0];
+      const contact = input.hubspotAppSearchContactsQK2A?.[0];
+
+      // Reverse mapping: HubSpot owner ID -> Acumatica owner name
+      const hubspotOwnerToAcumatica = {
+        '7321575': '127053', // TIMOTHY NIX
+        '26951785': '116638', // Walter Martinez
+        '80596682': '130063', // Ashley Nelson
+        '80771250': '130077', // Tara Cabaniss
+        '80771273': '130078', // Tamara Wood
+        '185671876': '127386', // Britt Cabral
+        '204240096': '129187', // Larry Woods
+        '205658988': '125541', // Jolene Ramos
+        '215835954': '116616', // Jim Whorton
+        '273828897': '116628', // Robert Lee
+        '601051234': '128351', // Luke Starry
+        '690603772': '127535', // Peggy Cole
+        '928040643': '129520', // Jeff Patterson
+        '1116181631': '116631', // Ryan Sperry
+        '1215258143': '129089', // Jeff Price
+        '1502551068': '116629', // Rachel Motte
+        '1716729933': '125930', // Tyler Garza
+        '1772285574': '116609', // Chris Barger
+        '1919764494': '116612', // Greg Lohse
+        '1964590240': '116606', // David Oldham
+        '2086206935': '129262', // Chris Hebert
+      };
+
+      // Reverse mapping: HubSpot stage ID -> Acumatica stage name
+      const hubspotStageToAcumatica = {
+        '1306157229': 'Prospect',
+        '1306157230': 'Development',
+        '1306157231': 'Expired',
+        'closedwon': 'Won',
+        'closedlost': 'Lost',
+        'appointmentscheduled': 'Prospect',
+        'qualifiedtobuy': 'Prospect',
+        'presentationscheduled': 'Development',
+        'decisionmakerboughtin': 'Development',
+        '239804008': 'Development'
+      };
+
+      // Helper function to convert epoch milliseconds to date string
+      function fromEpochMs(epochMs) {
+        if (!epochMs) return '';
+        const date = new Date(epochMs);
+        if (isNaN(date.getTime())) return '';
+        return date.toISOString();
+      }
+
+      // Get HubSpot owner ID and map to Acumatica owner name
+      const hubspotOwnerId = deal?.properties?.hubspotOwnerId || '';
+      const acumaticaOwner = hubspotOwnerToAcumatica[hubspotOwnerId] || '';
+
+      // Get HubSpot stage ID and map to Acumatica stage name
+      const hubspotStageId = deal?.properties?.dealstage || '';
+      const acumaticaStage = hubspotStageToAcumatica[hubspotStageId] || '';
+
+      // Convert closedate from epoch ms to date string
+      const closeDateEpoch = deal?.properties?.closedate || '';
+      const closeDateFormatted = fromEpochMs(closeDateEpoch);
+
+      // Build the Acumatica-formatted object
+      const acumaticaOpportunity = {
+        Subject: { value: deal?.properties?.dealname || '' },
+        BusinessAccount: { value: company?.properties?.acumaticaCustomerId || '' },
+        Contact: { value: contact?.properties?.acumaticaContactId || '' },
+        Owner: { value: acumaticaOwner },
+        Stage: { value: acumaticaStage },
+        CuryAmount: { value: deal?.properties?.amount || '' },
+        Estimation: { value: closeDateFormatted },
+        custom: {
+          Opportunity: {
+            UsrHSDealID: { value: deal.id }
+          }
+        },
+      };
+
+      return [acumaticaOpportunity];
+  - stepNumber: 20
+    name: Function - Hubspot Company → Acumatica Customer Search & Match
+    results: 1
+    type: action
+    args:
+      - label: Hubspot Company
+        value: "[Step 15: input]"
+  - stepNumber: 21
+    name: If/Else - If Confident Match
+    results: 1
+    type: conditional
+    condition: "[Step 20: input[0].status] = matched_by_id OR [Step 20: input[0].status] = matched_by_confidence"
+  - stepNumber: 22
+    name: If/Else - If Contact Is Empty
+    results: 1
+    type: conditional
+    condition: "[Step 19: input[0].Contact.value] empty null"
+  - stepNumber: 23
+    name: Map - Map HubSpot Contact to Acumatica Contact (Existing Customer)
+    input: Step 18, Step 20, Step 15
+    results: 1
+    type: map
+    code: |-
+      const contacts = input.hubspotAppSearchContactsQK2A;
+      const matchData = input.functionVZCB?.[0] || {};
+
+      // Find the first contact with a non-empty email
+      const contactFound = contacts?.[0];
+      const contactProps = contactFound?.properties || {};
+      const contactId = contactFound?.id || '';
+
+      const firstName = contactProps.firstname || '';
+      const lastName = contactProps.lastname || '';
+      const email = contactProps.email || '';
+      const phone = contactProps.phone || '';
+      const jobTitle = contactProps.jobtitle || '';
+
+      // Get existing customer info from the match step
+      const acumaticaCustomerId = matchData.acumaticaCustomerId || '';
+      const companyProps = input.hubspotAppSearchCompaniesWTEV?.[0]?.properties || {};
+      const companyName = companyProps.name || '';
+
+      // Build Contact object with only non-empty fields (same format as step 28)
+      const contact = {
+        FirstName: { value: firstName },
+        LastName: { value: lastName },
+        Email: { value: email },
+        Phone: { value: phone },
+        JobTitle: { value: jobTitle },
+        custom: {
+          Contact: {
+            UsrHSContactID: {
+              value: contactId
+            }
+          }
+        }
+      };
+
+      return [{
+        Contact: contact,
+        BusinessAccount: acumaticaCustomerId,
+        AccountName: { value: companyName }
+      }];
+  - stepNumber: 24
+    name: Acumatica - Create/Update Contact
+    results: 1
+    type: action
+    args:
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Endpoint Version
+        value: 1.0.0
+  - stepNumber: 25
+    name: Hubspot App - Update Acumatica Contact Id Field on HubSpot
+    type: action
+    args:
+      - label: Contact Id
+        value: "[Step 18: input[0].id]"
+      - label: Properties.acumatica contact id
+        value: "[Step 24: input[0].contactID.value]"
+  - stepNumber: 26
+    name: Map - Resolve Opportunity Contact ID
+    input: Step 24, Step 19
+    results: 1
+    type: map
+    code: |-
+      // Step 24 - Create/Update Contact in Acumatica (existing customer path)
+      const acumaticaContact = input.acumaticaNewAction19XF1?.[0];
+      // Step 19 - Map HubSpot Deal to Acumatica Opportunity (fallback)
+      const opportunityMap = input.mapJIFP?.[0];
+
+      // Use step 19's Contact value first, if empty fall back to step 24's contactID
+      const contactId = opportunityMap?.Contact?.value || acumaticaContact?.contactID?.value?.toString() || '';
+
+      return [{
+        Contact: { value: contactId }
+      }];
+  - stepNumber: 27
+    name: Acumatica - Create/Update Opportunity
+    results: 1
+    type: action
+    args:
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Opportunity I D.value
+        value: "[Step 10: input[0].properties.acumaticaOpportunityId]"
+  - stepNumber: 28
+    name: Hubspot App - Update the Acumatica Opportunity ID
+    results: 1
+    type: action
+    properties: '{"acumatica_opportunity_id": "'
+    args:
+      - label: Deal Id
+        value: "[Step 10: input[0].id]"
+  - stepNumber: 29
+    name: If/Else - If Ambiguous Match
+    type: conditional
+    condition: "[Step 20: input[0].status] = ambiguous_match"
+  - stepNumber: 30
+    name: Flow Control - End workflow as success, emit log, send email
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "[AMBIGUOUS_COMPANY_SKIPPED] company= "
+      - label: Send Email
+        value: Yes
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com
+      - label: Email Subject
+        value: "[ACTION REQUIRED] Ambiguous Customer Match - "
+      - label: Email Body
+        value: |-
+          An ambiguous company match was found and requires human review.
+
+          Company ID: 
+  - stepNumber: 31
+    name: Map - Map HubSpot Company to Acumatica Customer
+    input: Step 15, Step 18
+    results: 1
+    type: map
+    code: |
+      
+      const companies = input.hubspotAppSearchCompaniesWTEV;
+      const contacts = input.hubspotAppSearchContactsQK2A;
+
+      // Get the first company from the search results
+      const company = companies?.[0];
+      const props = company?.properties || {};
+
+      // Find the first contact with a non-empty email
+      const contactFound = contacts?.[0];
+      const email = contactFound?.properties?.email || "";
+      const contactProps = contactFound?.properties || {};
+      const firstName = contactProps.firstname || "";
+      const lastName = contactProps.lastname || "";
+      const phone = contactProps.phone || "";
+      const jobTitle = contactProps.jobtitle || "";
+      const contactId = contactFound.id
+
+      // Build Address object with only non-empty fields
+      const address = {
+        ...(props.address ? { AddressLine1: { value: props.address } } : {}),
+        ...(props.city ? { City: { value: props.city } } : {}),
+        ...(props.state ? { State: { value: props.state } } : {}),
+        ...(props.zip ? { PostalCode: { value: props.zip } } : {}),
+        ...(props.country ? { Country: { value: props.country } } : {})
+      };
+
+      // Build MainContact with only non-empty fields
+      const mainContact = {
+        ...(email ? { Email: { value: email } } : {}),
+        ...(props.phone ? { Phone1: { value: props.phone } } : {}),
+        ...(Object.keys(address).length > 0 ? { Address: address } : {}),
+        ...(props.website ? { Website: { value: props.website } } : {})
+      };
+
+      // Map HubSpot company properties to Acumatica Customer fields
+      return [{
+        CustomerName: { value: props.name || "" },
+        ...(Object.keys(mainContact).length > 0 ? { MainContact: mainContact } : {}),
+        AcumaticaCustomerID: { value: props.acumatica_customer_id || "" },
+        custom: {
+          Customer: {
+            UsrHSCompanyID: {
+              value: company.id
+            }
+          }
+        },
+        Contact: {
+          FirstName: { value: firstName },
+          LastName:  { value: lastName },
+          Email: { value: email },
+          Phone: { value: phone },
+          JobTitle: { value: jobTitle },
+          custom: {
+            Contact: {
+              UsrHSContactID: {
+                value: contactId
+              }
+            }
+            
+          }
+        }
+      }];
+  - stepNumber: 32
+    name: Acumatica - Create/Update Customer
+    results: 1
+    type: action
+    args:
+      - label: Wse
+        value: MindCloudIntegration
+      - label: Customer Name.value
+        value: "[Step 31: input[0].CustomerName.value]"
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Main Contact
+        value: "[Step 31: input[0].MainContact]"
+  - stepNumber: 33
+    name: Acumatica - Create/Update Contact
+    results: 1
+    type: action
+    args:
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+  - stepNumber: 34
+    name: Acumatica - Create/Update Opportunity
+    results: 1
+    type: action
+    args:
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Opportunity I D.value
+        value: "[Step 10: input[0].properties.acumaticaOpportunityId]"
+  - stepNumber: 35
+    name: Hubspot App - Update the Acumatica Opportunity ID
+    results: 1
+    type: action
+    properties: '{"acumatica_opportunity_id": "'
+    args:
+      - label: Deal Id
+        value: "[Step 10: input[0].id]"
+  - stepNumber: 36
+    name: Hubspot App - Update Contact by ID
+    type: action
+    properties: '{ "acumatica_contact_id": "'
+    args:
+      - label: Contact Id
+        value: "[Step 18: input[0].id]"
+  - stepNumber: 37
+    name: Map - Build lockedKeys Without Current Deal
+    input: Step 2
+    results: 1
+    type: map
+    code: |-
+      // Get the lock key from the Build Lock Key step
+      const lockKey = input.mapFGWE?.[0]?.lockKey || '';
+
+      // Get the current lockedKeys from memory
+      const memoryValue = input.memory?.lockedKeys;
+
+      let lockedKeys = [];
+      try {
+        const parsed = typeof memoryValue === 'string' ? JSON.parse(memoryValue) : memoryValue;
+        if (Array.isArray(parsed)) lockedKeys = parsed;
+      } catch (e) {
+        lockedKeys = [];
+      }
+
+      // Remove the current deal's lock key
+      const updatedLockedKeys = lockedKeys.filter(key => key !== lockKey);
+
+      return [{ updatedLockedKeys: JSON.stringify(updatedLockedKeys) }];
+  - stepNumber: 38
+    name: Memory - Release Lock (Set Memory)
+    results: 1
+    type: memory
+    memory:
+      - key: lockedKeys
+        savesOn: always

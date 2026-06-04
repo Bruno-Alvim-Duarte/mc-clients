@@ -1,0 +1,2135 @@
+workflow:
+  name: Shopify to NetSuite - Create Orders
+  id: s7ZDUmX7CjyA
+  version: 0.0.31
+  isActive: true
+  publishedOn: 2026-05-28T17:04:51.000Z
+triggers:
+  - name: Schedule - Run every 30 minutes, only on weekdays
+    type: schedule
+    message: Run every 30 minutes, only on weekdays
+    schedule:
+      mode: interval
+      days:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+      dayNames:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+      intervalMs: 1800000
+steps:
+  - stepNumber: 1
+    name: Shopify - Get Orders (Filtered By Cutoff date + without tag exported + status paid)
+    results: 8
+    type: action
+    args:
+      - label: Query
+        value: |-
+          query GetOrdersToExport($cursor: String, $batchSize: Int!, $query: String!) {
+            orders(
+              first: $batchSize
+              after: $cursor
+              query: $query
+              sortKey: CREATED_AT
+              reverse: false
+            ) {
+              edges {
+                cursor
+                node {
+                  id
+                  name
+                  createdAt
+                  updatedAt
+                  tags
+                  displayFinancialStatus
+                  displayFulfillmentStatus
+                  email
+                  phone
+          
+                  sourceName
+                  sourceIdentifier
+          
+                  app {
+                    id
+                    name
+                  }
+          
+                  channelInformation {
+                    id
+                    channelId
+                    displayName
+                    app {
+                      id
+                      title
+                    }
+                    channelDefinition {
+                      channelName
+                      subChannelName
+                      handle
+                    }
+                  }
+          
+                  customAttributes {
+                    key
+                    value
+                  }
+          
+                  totalDiscountsSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+          
+                  totalTaxSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+          
+                  totalShippingPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+          
+                  billingAddress {
+                    firstName
+                    lastName
+                    name
+                    address1
+                    address2
+                    city
+                    province
+                    provinceCode
+                    country
+                    countryCodeV2
+                    zip
+                    phone
+                  }
+          
+                  shippingAddress {
+                    firstName
+                    lastName
+                    name
+                    address1
+                    address2
+                    city
+                    province
+                    provinceCode
+                    country
+                    countryCodeV2
+                    zip
+                    phone
+                  }
+          
+                  customer {
+                    id
+                    email
+                    firstName
+                    lastName
+                    phone
+                  }
+          
+                  totalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+          
+                  lineItems(first: 100) {
+                    edges {
+                      node {
+                        id
+                        title
+                        sku
+                        quantity
+                        originalUnitPriceSet {
+                          shopMoney {
+                            amount
+                            currencyCode
+                          }
+                        }
+                        discountedTotalSet {
+                          shopMoney {
+                            amount
+                            currencyCode
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+          
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+            }
+          }
+      - label: Variables
+        value: {  cursor: null,  batchSize: 250,  query: "-fulfillment_status:fulfilled financial_status:paid tag_not:exported status:open"}
+  - stepNumber: 2
+    name: Iterate - Loop through Shopify Orders
+    type: loop
+    loopTarget:
+      stepNumber: 1
+      name: Shopify - Get Orders (Filtered By Cutoff date + without tag exported + status paid)
+    children:
+      - stepNumber: 3
+        name: Map - Map Shopify Order Data
+        input: Step 2
+        results: 1
+        type: map
+        code: |-
+          const order = input.iterateO2RK[0];
+          
+          // --- Shopify Order ID (numeric, extracted from GID) ---
+          const shopifyGid = order.id || "";
+          const shopifyOrderId = shopifyGid.replace("gid://shopify/Order/", "");
+          
+          // --- Order Number ---
+          const orderNumber = order.name || "";
+          
+          // --- Customer Info ---
+          const customer = order.customer || {};
+          const customerEmail = customer.email || order.email || "";
+          const customerFirstName = customer.firstName || "";
+          const customerLastName = customer.lastName || "";
+          
+          // --- Billing Address ---
+          const billing = order.billingAddress || {};
+          const billingAddress = {
+            firstName: billing.firstName || "",
+            lastName: billing.lastName || "",
+            company: billing.company || "",
+            address1: billing.address1 || "",
+            address2: billing.address2 || "",
+            city: billing.city || "",
+            province: billing.province || "",
+            provinceCode: billing.provinceCode || "",
+            country: billing.country || "",
+            countryCode: billing.countryCodeV2 || billing.countryCode || "",
+            zip: billing.zip || "",
+            phone: billing.phone || ""
+          };
+          
+          // --- Shipping Address ---
+          const shipping = order.shippingAddress || {};
+          const shippingAddress = {
+            firstName: shipping.firstName || "",
+            lastName: shipping.lastName || "",
+            company: shipping.company || "",
+            address1: shipping.address1 || "",
+            address2: shipping.address2 || "",
+            city: shipping.city || "",
+            province: shipping.province || "",
+            provinceCode: shipping.provinceCode || "",
+            country: shipping.country || "",
+            countryCode: shipping.countryCodeV2 || shipping.countryCode || "",
+            zip: shipping.zip || "",
+            phone: shipping.phone || ""
+          };
+          
+          // --- Line Items ---
+          const lineItems = (order.lineItems || []).map(item => {
+            const discountAllocations = (item.discountAllocations || []).map(da => ({
+              amount: da.allocatedAmountSet?.shopMoney?.amount || da.amount?.amount || "0",
+              currencyCode: da.allocatedAmountSet?.shopMoney?.currencyCode || da.amount?.currencyCode || "USD"
+            }));
+          
+            const taxLines = (item.taxLines || []).map(tl => ({
+              title: tl.title || "",
+              rate: tl.rate || 0,
+              price: tl.priceSet?.shopMoney?.amount || tl.price || "0",
+              currencyCode: tl.priceSet?.shopMoney?.currencyCode || "USD"
+            }));
+          
+            return {
+              lineItemId: (item.id || "").replace("gid://shopify/LineItem/", ""),
+              title: item.title || "",
+              sku: item.sku || "",
+              quantity: item.quantity || 0,
+              originalUnitPrice: item.originalUnitPriceSet?.shopMoney?.amount || "0",
+              discountedTotal: item.discountedTotalSet?.shopMoney?.amount || "0",
+              currencyCode: item.originalUnitPriceSet?.shopMoney?.currencyCode || "USD",
+              discountAllocations: discountAllocations,
+              taxLines: taxLines
+            };
+          });
+          
+          // --- Shipping Lines ---
+          const shippingLines = (order.shippingLines || []).map(sl => ({
+            title: sl.title || "",
+            code: sl.code || "",
+            price: sl.originalPriceSet?.shopMoney?.amount || sl.price || "0",
+            discountedPrice: sl.discountedPriceSet?.shopMoney?.amount || "0",
+            currencyCode: sl.originalPriceSet?.shopMoney?.currencyCode || "USD"
+          }));
+          
+          // --- Totals ---
+          const currencyCode = order.totalPriceSet?.shopMoney?.currencyCode || "USD";
+          
+          // --- Discount Codes (if available) ---
+          const discountCodes = (order.discountCodes || []).map(dc => dc || "");
+          
+          // --- Shipping Totals ---
+          const shippingAmount = order.totalShippingPriceSet?.shopMoney?.amount || "0";
+          const shippingTitle = (order.shippingLines && order.shippingLines.length > 0) ? (order.shippingLines[0].title || "") : "";
+          
+          // --- Tax Total ---
+          const taxAmount = order.totalTaxSet?.shopMoney?.amount || "0";
+          
+          return [{
+            shopifyOrderId,
+            shopifyGid,
+            orderNumber,
+            createdAt: order.createdAt || "",
+            updatedAt: order.updatedAt || "",
+            financialStatus: order.displayFinancialStatus || "",
+            fulfillmentStatus: order.displayFulfillmentStatus || "",
+            tags: order.tags || [],
+            customerEmail,
+            customerFirstName,
+            customerLastName,
+            billingAddress,
+            shippingAddress,
+            lineItems,
+            shippingLines,
+            currencyCode,
+            discountCodes,
+            shippingAmount,
+            shippingTitle,
+            taxAmount,
+            totalDiscountsSet: { ...order.totalDiscountsSet},
+            sourceName: order.sourceName,
+            sourceIdentifier: order.sourceIdentifier,
+            customAttributes: order.customAttributes
+          }];
+      - stepNumber: 4
+        name: Netsuite - List Customers
+        type: action
+        filter: Email = "${input.mapPOD2[0].customerEmail}", csegdivision = "${input.mapPOD2[0].divisonID}"
+      - stepNumber: 5
+        name: If/Else - If Id Is Not Empty
+        results: 1
+        type: conditional
+        condition: "[Step 4: input[0].id] nempty null"
+  - stepNumber: 6
+    name: Netsuite - Search for Order Items In Netsuite
+    results: 1
+    type: action
+    code: |-
+      const order = ${JSON.stringify(input?.mapPOD2?.[0])};
+      
+      function execute() {
+        try {
+          const lineItems = Array.isArray(order?.lineItems)
+            ? order.lineItems
+            : [];
+      
+          const skus = [
+            ...new Set(
+              lineItems
+                .map(function (item) {
+                  return item?.sku;
+                })
+                .filter(Boolean)
+                .map(function (sku) {
+                  return String(sku).trim();
+                })
+            )
+          ];
+      
+          if (!skus.length) {
+            return {
+              success: false,
+              message: 'No SKUs found in Shopify lineItems',
+              orderName: order?.name,
+              items: [],
+              missingSkus: []
+            };
+          }
+      
+          const skuFilters = [];
+      
+          skus.forEach(function (sku, index) {
+            if (index > 0) {
+              skuFilters.push('OR');
+            }
+      
+            skuFilters.push(['itemid', 'is', sku]);
+          });
+      
+          const itemSearch = search.create({
+            type: search.Type.ITEM,
+            filters: [
+              skuFilters
+            ],
+            columns: [
+              search.createColumn({ name: 'internalid' }),
+              search.createColumn({ name: 'itemid' }),
+              search.createColumn({ name: 'displayname' }),
+              search.createColumn({ name: 'salesdescription' }),
+              search.createColumn({ name: 'upccode' })
+            ]
+          });
+      
+          const foundItems = [];
+          const resultSet = itemSearch.run();
+      
+          resultSet.each(function (result) {
+            foundItems.push({
+              internalId: result.getValue({ name: 'internalid' }),
+              sku: result.getValue({ name: 'itemid' }),
+              displayName: result.getValue({ name: 'displayname' }),
+              salesDescription: result.getValue({ name: 'salesdescription' }),
+              upcCode: result.getValue({ name: 'upccode' })
+            });
+      
+            return true;
+          });
+      
+          const foundSkuMap = {};
+      
+          foundItems.forEach(function (item) {
+            foundSkuMap[String(item.sku).trim()] = item;
+          });
+      
+          const missingSkus = skus.filter(function (sku) {
+            return !foundSkuMap[sku];
+          });
+      
+          const enrichedLineItems = lineItems.map(function (lineItem) {
+            const sku = String(lineItem.sku || '').trim();
+            const netsuiteItem = foundSkuMap[sku] || null;
+      
+            return {
+              shopifyLineItemId: lineItem.id,
+              title: lineItem.title,
+              sku: sku,
+              quantity: lineItem.quantity,
+              originalUnitPrice: lineItem.originalUnitPriceSet?.shopMoney?.amount,
+              discountedTotal: lineItem.discountedTotalSet?.shopMoney?.amount,
+              currencyCode: lineItem.originalUnitPriceSet?.shopMoney?.currencyCode,
+              netsuiteItemId: netsuiteItem?.internalId || null,
+              netsuiteItem: netsuiteItem
+            };
+          });
+      
+          return {
+            success: missingSkus.length === 0,
+            orderId: order?.id,
+            orderName: order?.name,
+            searchedSkus: skus,
+            foundItems: foundItems,
+            missingSkus: missingSkus,
+            lineItems: enrichedLineItems
+          };
+      
+        } catch (error) {
+          return {
+            success: false,
+            message: error.message,
+            stack: error.stack,
+            error: error
+          };
+        }
+      }
+      
+      execute();
+  - stepNumber: 7
+    name: If/Else - If Missing SKUs Found
+    results: 1
+    type: conditional
+    condition: "[Step 6: input[0].success] ne true"
+  - stepNumber: 8
+    name: Flow Control - Log and Email Missing SKUs Warning
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "Order "
+      - label: Send Email
+        value: Yes
+      - label: Email To
+        value: bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com
+      - label: Email Subject
+        value: "⚠️ Order "
+      - label: Email Body
+        value: The following Shopify order was skipped and NOT created in N...
+  - stepNumber: 9
+    name: Netsuite - Create Order
+    results: 1
+    type: action
+    code: |-
+      const order = ${JSON.stringify(input?.mapPOD2?.[0])};
+      const matchedItemsResult = ${JSON.stringify(input?.netsuiteExecuteCustomCodeVLIS?.[0])};
+      const customerResult = ${JSON.stringify(input?.netsuiteListCustomersO7B0?.[0])};
+      const wfArguments = ${JSON.stringify(input?.workflowArguments)}
+      
+      function execute() {
+        try {
+          // -----------------------------
+          // Config
+          // -----------------------------
+          const NETSUITE_SUBSIDIARY_ID = 3;
+          const NETSUITE_CUSTOM_FORM_ID = 209;
+          const NETSUITE_CSEG_DIVISION = wfArguments.divisionID;
+          const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
+          const NETSUITE_LOCATION_ID = wfArguments.locationID;
+          const DEFAULT_CURRENCY_ID = 1;
+      
+          // -----------------------------
+          // Helpers
+          // -----------------------------
+          function getShopifyNumericId(gid) {
+            if (!gid) return null;
+            return String(gid).split('/').pop();
+          }
+      
+          function toNumber(value, fallback) {
+            const num = Number(value);
+            return isNaN(num) ? fallback : num;
+          }
+      
+          function getLineItems(order) {
+            if (Array.isArray(order?.lineItems)) {
+              return order.lineItems;
+            }
+      
+            if (Array.isArray(order?.lineItems?.edges)) {
+              return order.lineItems.edges.map(function (edge) {
+                return edge.node;
+              });
+            }
+      
+            return [];
+          }
+      
+          function getSourceText(value) {
+            if (value === null || value === undefined) return '';
+            return String(value).trim().toLowerCase();
+          }
+      
+          function getOrderSourceName(order) {
+            return getSourceText(order?.sourceName);
+          }
+      
+          function getCustomAttributesText(order) {
+            if (!Array.isArray(order?.customAttributes)) {
+              return '';
+            }
+      
+            return order.customAttributes
+              .map(function (attribute) {
+                return [
+                  getSourceText(attribute?.key),
+                  getSourceText(attribute?.value)
+                ].filter(Boolean).join(' ');
+              })
+              .filter(Boolean)
+              .join(' ');
+          }
+      
+          function getShopifyOrderClass(order) {
+            const sourceName = getOrderSourceName(order);
+      
+            if (sourceName === '71323942913') return '3';
+            if (sourceName === 'amazon') return '1';
+            if (sourceName === 'ebay') return '2';
+      
+            const customAttributesText = getCustomAttributesText(order);
+      
+            if (customAttributesText.indexOf('walmart') !== -1) return '3';
+            if (customAttributesText.indexOf('amazon') !== -1) return '1';
+            if (customAttributesText.indexOf('ebay') !== -1) return '2';
+      
+            return '4';
+          }
+      
+          function parseShopifyDateToNetSuiteDate(value) {
+            if (!value) return null;
+      
+            const date = new Date(value);
+      
+            if (isNaN(date.getTime())) {
+              return null;
+            }
+      
+            return date;
+          }
+      
+          function getAmount(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const amount = Number(value);
+            return isNaN(amount) ? null : amount;
+          }
+      
+          function buildItemMap(matchedItemsResult) {
+            const map = {};
+      
+            const matchedLineItems =
+              matchedItemsResult?.lineItems ||
+              matchedItemsResult?.items ||
+              [];
+      
+            matchedLineItems.forEach(function (line) {
+              if (!line?.sku) return;
+      
+              map[String(line.sku).trim()] = {
+                sku: String(line.sku).trim(),
+                netsuiteItemId: line.netsuiteItemId || line.internalId || line.itemId || null,
+                netsuiteItem: line.netsuiteItem || null
+              };
+            });
+      
+            return map;
+          }
+      
+          function getCustomerId(customerResult) {
+            return (
+              customerResult?.recordId ||
+              customerResult?.id ||
+              customerResult?.internalId ||
+              customerResult?.customerId ||
+              null
+            );
+          }
+      
+      
+          function getShopifyDiscountAmount(order) {
+            return getAmount(
+              order?.currentTotalDiscountsSet?.shopMoney?.amount ||
+              order?.totalDiscountsSet?.shopMoney?.amount ||
+              0
+            ) || 0;
+          }
+      
+          function setNonTaxableItemLine(salesOrderRec) {
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'isTaxable',
+              value: false,
+              forceSyncSourcing: true
+            });
+          }
+      
+          function addShopifyDiscountLine(salesOrderRec, discountAmount, isAmazonFbmOrder) {
+            const SHOPIFY_DISCOUNT_ITEM_ID = wfArguments.discountID
+      
+            if (!discountAmount || discountAmount <= 0) {
+              return false;
+            }
+      
+            salesOrderRec.selectNewLine({
+              sublistId: 'item'
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'item',
+              value: SHOPIFY_DISCOUNT_ITEM_ID
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'quantity',
+              value: 1
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'price',
+              value: -1
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'rate',
+              value: -Math.abs(discountAmount)
+            });
+      
+            if (isAmazonFbmOrder) {
+              setNonTaxableItemLine(salesOrderRec);
+            }
+      
+            salesOrderRec.commitLine({
+              sublistId: 'item'
+            });
+      
+            return true;
+          }
+      
+          function getShopifyShippingAmount(order) {
+            return getAmount(
+              order?.shippingAmount ||
+              order?.totalShippingPrice ||
+              order?.totalShippingPriceSet?.shopMoney?.amount ||
+              0
+            ) || 0;
+          }
+      
+          function setTransactionAddress(salesOrderRec, fieldId, addressData) {
+            if (!addressData) return;
+      
+            const addressSubrecord = salesOrderRec.getSubrecord({
+              fieldId: fieldId
+            });
+      
+            const addressee =
+              addressData.name ||
+              [addressData.firstName, addressData.lastName].filter(Boolean).join(' ').trim();
+      
+            if (addressData.countryCodeV2 || addressData.countryCode || addressData.country) {
+              addressSubrecord.setValue({
+                fieldId: 'country',
+                value: addressData.countryCodeV2 || addressData.countryCode || addressData.country
+              });
+            }
+      
+            if (addressee) {
+              addressSubrecord.setValue({
+                fieldId: 'addressee',
+                value: addressee
+              });
+            }
+      
+            if (addressData.company) {
+              addressSubrecord.setValue({
+                fieldId: 'attention',
+                value: addressData.company
+              });
+            }
+      
+            if (addressData.address1) {
+              addressSubrecord.setValue({
+                fieldId: 'addr1',
+                value: addressData.address1
+              });
+            }
+      
+            if (addressData.address2) {
+              addressSubrecord.setValue({
+                fieldId: 'addr2',
+                value: addressData.address2
+              });
+            }
+      
+            if (addressData.city) {
+              addressSubrecord.setValue({
+                fieldId: 'city',
+                value: addressData.city
+              });
+            }
+      
+            if (addressData.provinceCode || addressData.province) {
+              addressSubrecord.setValue({
+                fieldId: 'state',
+                value: addressData.provinceCode || addressData.province
+              });
+            }
+      
+            if (addressData.zip) {
+              addressSubrecord.setValue({
+                fieldId: 'zip',
+                value: addressData.zip
+              });
+            }
+      
+            if (addressData.phone) {
+              addressSubrecord.setValue({
+                fieldId: 'addrphone',
+                value: addressData.phone
+              });
+            }
+          }
+      
+          // -----------------------------
+          // Source data
+          // -----------------------------
+          const shopifyOrderId = getShopifyNumericId(order?.orderNumber);
+          const shopifyOrderName = order?.name;
+          const lineItems = getLineItems(order);
+          const shopifyOrderClass = getShopifyOrderClass(order);
+          const isAmazonFbmOrder = shopifyOrderClass === '1';
+          const itemMap = buildItemMap(matchedItemsResult);
+          const shopifyCreatedAt = order?.createdAt;
+          const transactionDate = parseShopifyDateToNetSuiteDate(shopifyCreatedAt);
+      
+          const customerId = getCustomerId(customerResult);
+      
+          if (!customerId) {
+            return {
+              success: false,
+              message: 'Missing NetSuite customer internal ID. Create or find the customer before creating the Sales Order.',
+              customerResult: customerResult
+            };
+          }
+      
+          if (!lineItems.length) {
+            return {
+              success: false,
+              message: 'No Shopify lineItems found on order.',
+              orderId: order?.id,
+              orderName: order?.name
+            };
+          }
+      
+          // -----------------------------
+          // Create Sales Order
+          // -----------------------------
+          const salesOrderRec = record.create({
+            type: 'salesorder',
+            isDynamic: true
+          });
+      
+          // Custom form should be one of the first fields if used
+          if (NETSUITE_CUSTOM_FORM_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'customform',
+              value: NETSUITE_CUSTOM_FORM_ID
+            });
+          }
+      
+          salesOrderRec.setValue({
+            fieldId: 'entity',
+            value: Number(customerId)
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'subsidiary',
+            value: NETSUITE_SUBSIDIARY_ID
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'csegdivision',
+            value: NETSUITE_CSEG_DIVISION
+          });
+      
+          if (transactionDate) {
+            salesOrderRec.setValue({
+              fieldId: 'trandate',
+              value: transactionDate
+            });
+          }
+      
+          if (DEFAULT_CURRENCY_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'currency',
+              value: DEFAULT_CURRENCY_ID
+            });
+          }
+      
+          if (NETSUITE_LOCATION_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'location',
+              value: NETSUITE_LOCATION_ID
+            });
+          }
+      
+          if (NETSUITE_ORDER_CLASS_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'class',
+              value: NETSUITE_ORDER_CLASS_ID
+            });
+          }
+      
+          if (shopifyOrderName) {
+            salesOrderRec.setValue({
+              fieldId: 'otherrefnum',
+              value: shopifyOrderName
+            });
+          }
+      
+          salesOrderRec.setValue({
+            fieldId: 'memo',
+            value: 'Shopify Order ' + (shopifyOrderName || shopifyOrderId || '')
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'custbody_shopify_ord_id',
+            value: shopifyOrderId
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'paymentmethod',
+            value: 60
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'custbody_shopify_ord_class',
+            value: shopifyOrderClass
+          });
+      
+          //
+          // salesOrderRec.setValue({
+          //   fieldId: 'custbody_shopify_order_name',
+          //   value: shopifyOrderName
+          // });
+      
+          // -----------------------------
+          // Addresses
+          // -----------------------------
+          if (order?.billingAddress) {
+            setTransactionAddress(salesOrderRec, 'billingaddress', order.billingAddress);
+          }
+      
+          if (order?.shippingAddress) {
+            setTransactionAddress(salesOrderRec, 'shippingaddress', order.shippingAddress);
+          }
+      
+          // -----------------------------
+          // Item Lines
+          // -----------------------------
+          lineItems.forEach(function (lineItem) {
+            const sku = String(lineItem.sku || '').trim();
+            const matchedItem = itemMap[sku];
+      
+            const quantity = toNumber(lineItem.quantity, 1);
+      
+            const unitPrice = getAmount(
+              lineItem.originalUnitPrice
+            );
+      
+            const rate = unitPrice;
+      
+            salesOrderRec.selectNewLine({
+              sublistId: 'item'
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'item',
+              value: Number(matchedItem.netsuiteItemId),
+              forceSyncSourcing: true
+            });
+      
+            if (NETSUITE_LOCATION_ID) {
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'location',
+                value: NETSUITE_LOCATION_ID,
+                forceSyncSourcing: true
+              });
+            }
+      
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'quantity',
+              value: quantity,
+              forceSyncSourcing: true
+            });
+      
+            // Use custom price so NetSuite accepts Shopify price
+            if (rate !== null) {
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'price',
+                value: -1,
+                forceSyncSourcing: true
+              });
+      
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'rate',
+                value: rate,
+                forceSyncSourcing: true
+              });
+      
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'amount',
+                value: rate * quantity,
+                forceSyncSourcing: true
+              });
+            }
+      
+            if (isAmazonFbmOrder) {
+              setNonTaxableItemLine(salesOrderRec);
+            }
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'description',
+              value: lineItem.title || sku
+            });
+      
+            salesOrderRec.commitLine({
+              sublistId: 'item'
+            });
+          });
+      
+          const discountAmount = getShopifyDiscountAmount(order);
+      
+          const discountLineAdded = addShopifyDiscountLine(
+            salesOrderRec,
+            discountAmount,
+            isAmazonFbmOrder
+          );
+      
+          const shippingAmount = getShopifyShippingAmount(order);
+      
+          if (shippingAmount > 0) {
+            salesOrderRec.setValue({
+              fieldId: 'shippingcost',
+              value: shippingAmount
+            });
+          }
+      
+          // -----------------------------
+          // Save
+          // -----------------------------
+          const salesOrderId = salesOrderRec.save({
+            enableSourcing: true,
+            ignoreMandatoryFields: false
+          });
+      
+          return {
+            success: true,
+            recordId: salesOrderId,
+            message: 'Sales Order created successfully',
+            shopifyOrderId: shopifyOrderId,
+            shopifyOrderName: shopifyOrderName,
+            customerId: customerId,
+            lineCount: lineItems.length,
+            discountAmount: discountAmount,
+            discountLineAdded: discountLineAdded,
+            shippingAmount,
+            isAmazonFbmOrder: isAmazonFbmOrder
+          };
+      
+        } catch (error) {
+          return {
+            success: false,
+            message: error.message,
+            stack: error.stack,
+            error: error
+          };
+        }
+      }
+      
+      execute();
+  - stepNumber: 10
+    name: "Shopify - Add Tag: Exported"
+    results: 1
+    type: action
+    args:
+      - label: Query
+        value: |-
+          mutation tagsAdd($id: ID!, $tags: [String!]!)
+            {
+              tagsAdd(id: $id, tags: $tags) {
+                node {
+                  ... on Order {
+                    id
+                    tags
+                    }
+                  }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+      - label: Variables
+        value: "{ id: \"step3.ShopifyGid\", tags: [\"Exported\"] }"
+  - stepNumber: 11
+    name: Netsuite - Create Customer
+    results: 1
+    type: action
+    code: |-
+      const args = ${JSON.stringify(input['mapPOD2'][0])};
+      const wfArguments = ${JSON.stringify(input['workflowArguments'])}
+      
+      try {
+          const customerRec = record.create({
+              type: 'customer',
+              isDynamic: true
+          });
+      
+          // -----------------------------
+          // Helpers
+          // -----------------------------
+          function getShopifyNumericId(gid) {
+              if (!gid) return null;
+              return String(gid).split('/').pop();
+          }
+      
+          function buildName(firstName, lastName, fallback) {
+              const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+              return fullName || fallback || 'Shopify Customer';
+          }
+      
+          function getSourceText(value) {
+              if (value === null || value === undefined) return '';
+              return String(value).trim().toLowerCase();
+          }
+      
+          function getOrderSourceName(order) {
+              return getSourceText(order?.sourceName);
+          }
+      
+          function getCustomAttributesText(order) {
+              if (!Array.isArray(order?.customAttributes)) {
+                  return '';
+              }
+      
+              return order.customAttributes
+                  .map(function (attribute) {
+                      return [
+                          getSourceText(attribute?.key),
+                          getSourceText(attribute?.value)
+                      ].filter(Boolean).join(' ');
+                  })
+                  .filter(Boolean)
+                  .join(' ');
+          }
+      
+          function getShopifyCustomerClass(order) {
+              const sourceName = getOrderSourceName(order);
+      
+              if (sourceName === '71323942913') return '3';
+              if (sourceName === 'amazon') return '1';
+              if (sourceName === 'ebay') return '2';
+      
+              const customAttributesText = getCustomAttributesText(order);
+      
+              if (customAttributesText.indexOf('walmart') !== -1) return '3';
+              if (customAttributesText.indexOf('amazon') !== -1) return '1';
+              if (customAttributesText.indexOf('ebay') !== -1) return '2';
+      
+              return '4';
+          }
+      
+          function mapCountry(countryCode) {
+              // Shopify usually returns countryCodeV2 like "US", "CA", "BR"
+              // NetSuite normally accepts the 2-letter country code in SuiteScript.
+              return countryCode || null;
+          }
+      
+          function addAddressLine({
+              addressData,
+              defaultBilling,
+              defaultShipping,
+              label
+          }) {
+              if (!addressData) return;
+      
+              customerRec.selectNewLine({ sublistId: 'addressbook' });
+      
+              customerRec.setCurrentSublistValue({
+                  sublistId: 'addressbook',
+                  fieldId: 'defaultbilling',
+                  value: !!defaultBilling
+              });
+      
+              customerRec.setCurrentSublistValue({
+                  sublistId: 'addressbook',
+                  fieldId: 'defaultshipping',
+                  value: !!defaultShipping
+              });
+      
+              customerRec.setCurrentSublistValue({
+                  sublistId: 'addressbook',
+                  fieldId: 'isresidential',
+                  value: true
+              });
+      
+              if (label) {
+                  customerRec.setCurrentSublistValue({
+                      sublistId: 'addressbook',
+                      fieldId: 'label',
+                      value: label
+                  });
+              }
+      
+              const addrSubrecord = customerRec.getCurrentSublistSubrecord({
+                  sublistId: 'addressbook',
+                  fieldId: 'addressbookaddress'
+              });
+      
+              const addressee =
+                  addressData.name ||
+                  [addressData.firstName, addressData.lastName].filter(Boolean).join(' ').trim() ||
+                  customerName;
+      
+              const country =
+                  mapCountry(addressData.countryCodeV2 || addressData.countryCode || addressData.country);
+      
+              if (country) {
+                  addrSubrecord.setValue({
+                      fieldId: 'country',
+                      value: country
+                  });
+              }
+      
+              if (addressee) {
+                  addrSubrecord.setValue({
+                      fieldId: 'addressee',
+                      value: addressee
+                  });
+              }
+      
+              if (addressData.company) {
+                  addrSubrecord.setValue({
+                      fieldId: 'attention',
+                      value: addressData.company
+                  });
+              }
+      
+              if (addressData.address1) {
+                  addrSubrecord.setValue({
+                      fieldId: 'addr1',
+                      value: addressData.address1
+                  });
+              }
+      
+              if (addressData.address2) {
+                  addrSubrecord.setValue({
+                      fieldId: 'addr2',
+                      value: addressData.address2
+                  });
+              }
+      
+              if (addressData.city) {
+                  addrSubrecord.setValue({
+                      fieldId: 'city',
+                      value: addressData.city
+                  });
+              }
+      
+              if (addressData.provinceCode || addressData.province) {
+                  addrSubrecord.setValue({
+                      fieldId: 'state',
+                      value: addressData.provinceCode || addressData.province
+                  });
+              }
+      
+              if (addressData.zip) {
+                  addrSubrecord.setValue({
+                      fieldId: 'zip',
+                      value: addressData.zip
+                  });
+              }
+      
+              if (addressData.phone) {
+                  addrSubrecord.setValue({
+                      fieldId: 'addrphone',
+                      value: addressData.phone
+                  });
+              }
+      
+              customerRec.commitLine({ sublistId: 'addressbook' });
+          }
+      
+          // -----------------------------
+          // Shopify source data
+          // -----------------------------
+          const billingAddress = args.billingAddress || null;
+          const shippingAddress = args.shippingAddress || null;
+          const shopifyCustomerClass = getShopifyCustomerClass(args);
+      
+          const shopifyCustomerId = getShopifyNumericId(args.customerId || args.customer?.id);
+          const shopifyOrderId = getShopifyNumericId(args.orderId || args.id);
+      
+          const customerFirstName =
+              args.customerFirstName ||
+              args.customer?.firstName ||
+              billingAddress?.firstName ||
+              shippingAddress?.firstName ||
+              '';
+      
+          const customerLastName =
+              args.customerLastName ||
+              args.customer?.lastName ||
+              billingAddress?.lastName ||
+              shippingAddress?.lastName ||
+              '';
+      
+          const customerEmail =
+              args.customerEmail ||
+              args.customer?.email ||
+              args.email ||
+              '';
+      
+          const customerPhone =
+              args.customerPhone ||
+              args.customer?.phone ||
+              billingAddress?.phone ||
+              shippingAddress?.phone ||
+              '';
+      
+          const customerName = buildName(
+              customerFirstName,
+              customerLastName,
+              billingAddress?.name || shippingAddress?.name || customerEmail
+          );
+      
+          // -----------------------------
+          // Main Body Fields
+          // -----------------------------
+      
+          customerRec.setValue({
+              fieldId: 'customform',
+              value: 63
+          });
+      
+          customerRec.setValue({
+              fieldId: 'isperson',
+              value: 'T'
+          });
+      
+          if (customerFirstName) {
+              customerRec.setValue({
+                  fieldId: 'firstname',
+                  value: customerFirstName
+              });
+          }
+      
+          if (customerLastName) {
+              customerRec.setValue({
+                  fieldId: 'lastname',
+                  value: customerLastName
+              });
+          }
+      
+          if (customerEmail) {
+              customerRec.setValue({
+                  fieldId: 'email',
+                  value: customerEmail
+              });
+          }
+      
+          if (customerPhone) {
+              customerRec.setValue({
+                  fieldId: 'phone',
+                  value: customerPhone
+              });
+          }
+      
+          customerRec.setValue({
+              fieldId: 'subsidiary',
+              value: 3
+          });
+      
+          customerRec.setValue({
+              fieldId: 'entitystatus',
+              value: wfArguments.statusID
+          });
+      
+          customerRec.setValue({
+              fieldId: 'csegdivision',
+              value: wfArguments.divisionID
+          });
+      
+          customerRec.setValue({
+              fieldId: 'custentity_customer_class',
+              value: wfArguments.customerClassID
+          });
+      
+          customerRec.setValue({
+              fieldId: 'custentity_shopify_cust_class',
+              value: shopifyCustomerClass
+          });
+      
+          customerRec.setValue({
+              fieldId: 'custentity_shopify_email',
+              value: customerEmail
+          });
+      
+          // -----------------------------
+          // Address Book
+          // -----------------------------
+      
+          if (billingAddress) {
+              addAddressLine({
+                  addressData: billingAddress,
+                  defaultBilling: true,
+                  defaultShipping: !shippingAddress,
+                  label: 'Shopify Billing Address'
+              });
+          }
+      
+          if (shippingAddress) {
+              addAddressLine({
+                  addressData: shippingAddress,
+                  defaultBilling: !billingAddress,
+                  defaultShipping: true,
+                  label: 'Shopify Shipping Address'
+              });
+          }
+      
+          // -----------------------------
+          // Save
+          // -----------------------------
+          const newRecordId = customerRec.save({
+              enableSourcing: true,
+              ignoreMandatoryFields: false
+          });
+      
+          var result = {
+              success: true,
+              recordId: newRecordId,
+              message: 'Customer created successfully',
+              dataAdded: {
+                  firstName: customerFirstName,
+                  lastName: customerLastName,
+                  name: customerName,
+                  email: customerEmail,
+                  phone: customerPhone,
+                  billingAddressAdded: !!billingAddress,
+                  shippingAddressAdded: !!shippingAddress
+              }
+          };
+      
+          result;
+      
+      } catch (e) {
+          var errorResult = {
+              success: false,
+              message: e.message,
+              stack: e.stack
+          };
+      
+          errorResult;
+      }
+  - stepNumber: 12
+    name: Netsuite - Search for Order Items In Netsuite
+    results: 1
+    type: action
+    code: |-
+      const order = ${JSON.stringify(input?.mapPOD2?.[0])};
+      
+      function execute() {
+        try {
+          const lineItems = Array.isArray(order?.lineItems)
+            ? order.lineItems
+            : [];
+      
+          const skus = [
+            ...new Set(
+              lineItems
+                .map(function (item) {
+                  return item?.sku;
+                })
+                .filter(Boolean)
+                .map(function (sku) {
+                  return String(sku).trim();
+                })
+            )
+          ];
+      
+          if (!skus.length) {
+            return {
+              success: false,
+              message: 'No SKUs found in Shopify lineItems',
+              orderName: order?.name,
+              items: [],
+              missingSkus: []
+            };
+          }
+      
+          const skuFilters = [];
+      
+          skus.forEach(function (sku, index) {
+            if (index > 0) {
+              skuFilters.push('OR');
+            }
+      
+            skuFilters.push(['itemid', 'is', sku]);
+          });
+      
+          const itemSearch = search.create({
+            type: search.Type.ITEM,
+            filters: [
+              skuFilters
+            ],
+            columns: [
+              search.createColumn({ name: 'internalid' }),
+              search.createColumn({ name: 'itemid' }),
+              search.createColumn({ name: 'displayname' }),
+              search.createColumn({ name: 'salesdescription' }),
+              search.createColumn({ name: 'upccode' })
+            ]
+          });
+      
+          const foundItems = [];
+          const resultSet = itemSearch.run();
+      
+          resultSet.each(function (result) {
+            foundItems.push({
+              internalId: result.getValue({ name: 'internalid' }),
+              sku: result.getValue({ name: 'itemid' }),
+              displayName: result.getValue({ name: 'displayname' }),
+              salesDescription: result.getValue({ name: 'salesdescription' }),
+              upcCode: result.getValue({ name: 'upccode' })
+            });
+      
+            return true;
+          });
+      
+          const foundSkuMap = {};
+      
+          foundItems.forEach(function (item) {
+            foundSkuMap[String(item.sku).trim()] = item;
+          });
+      
+          const missingSkus = skus.filter(function (sku) {
+            return !foundSkuMap[sku];
+          });
+      
+          const enrichedLineItems = lineItems.map(function (lineItem) {
+            const sku = String(lineItem.sku || '').trim();
+            const netsuiteItem = foundSkuMap[sku] || null;
+      
+            return {
+              shopifyLineItemId: lineItem.id,
+              title: lineItem.title,
+              sku: sku,
+              quantity: lineItem.quantity,
+              originalUnitPrice: lineItem.originalUnitPriceSet?.shopMoney?.amount,
+              discountedTotal: lineItem.discountedTotalSet?.shopMoney?.amount,
+              currencyCode: lineItem.originalUnitPriceSet?.shopMoney?.currencyCode,
+              netsuiteItemId: netsuiteItem?.internalId || null,
+              netsuiteItem: netsuiteItem
+            };
+          });
+      
+          return {
+            success: missingSkus.length === 0,
+            orderId: order?.id,
+            orderName: order?.name,
+            searchedSkus: skus,
+            foundItems: foundItems,
+            missingSkus: missingSkus,
+            lineItems: enrichedLineItems
+          };
+      
+        } catch (error) {
+          return {
+            success: false,
+            message: error.message,
+            stack: error.stack,
+            error: error
+          };
+        }
+      }
+      
+      execute();
+  - stepNumber: 13
+    name: If/Else - If Missing SKUs Found
+    results: 1
+    type: conditional
+    condition: "[Step 12: input[0].success] ne true"
+  - stepNumber: 14
+    name: Flow Control - Log and Email Missing SKUs Warning
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "Order "
+      - label: Send Email
+        value: Yes
+      - label: Email To
+        value: bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com
+      - label: Email Subject
+        value: "⚠️ Order "
+      - label: Email Body
+        value: The following Shopify order was skipped and NOT created in N...
+  - stepNumber: 15
+    name: Netsuite - Create Order
+    results: 1
+    type: action
+    code: |-
+      const order = ${JSON.stringify(input?.mapPOD2?.[0])};
+      const matchedItemsResult = ${JSON.stringify(input?.netsuiteExecuteCustomCodeQSVO?.[0])};
+      const customerResult = ${JSON.stringify(input?.netsuiteExecuteCustomCodeY7CQ?.[0])};
+      const wfArguments = ${JSON.stringify(input?.workflowArguments)}
+      
+      function execute() {
+        try {
+          // -----------------------------
+          // Config
+          // -----------------------------
+          const NETSUITE_SUBSIDIARY_ID = 3;
+          const NETSUITE_CUSTOM_FORM_ID = 209;
+          const NETSUITE_CSEG_DIVISION = wfArguments.divisionID;
+          const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
+          const NETSUITE_LOCATION_ID = wfArguments.locationID;
+          const DEFAULT_CURRENCY_ID = 1;
+      
+          // -----------------------------
+          // Helpers
+          // -----------------------------
+          function getShopifyNumericId(gid) {
+            if (!gid) return null;
+            return String(gid).split('/').pop();
+          }
+      
+          function toNumber(value, fallback) {
+            const num = Number(value);
+            return isNaN(num) ? fallback : num;
+          }
+      
+          function getLineItems(order) {
+            if (Array.isArray(order?.lineItems)) {
+              return order.lineItems;
+            }
+      
+            if (Array.isArray(order?.lineItems?.edges)) {
+              return order.lineItems.edges.map(function (edge) {
+                return edge.node;
+              });
+            }
+      
+            return [];
+          }
+      
+          function getSourceText(value) {
+            if (value === null || value === undefined) return '';
+            return String(value).trim().toLowerCase();
+          }
+      
+          function getOrderSourceName(order) {
+            return getSourceText(order?.sourceName);
+          }
+      
+          function getCustomAttributesText(order) {
+            if (!Array.isArray(order?.customAttributes)) {
+              return '';
+            }
+      
+            return order.customAttributes
+              .map(function (attribute) {
+                return [
+                  getSourceText(attribute?.key),
+                  getSourceText(attribute?.value)
+                ].filter(Boolean).join(' ');
+              })
+              .filter(Boolean)
+              .join(' ');
+          }
+      
+          function getShopifyOrderClass(order) {
+            const sourceName = getOrderSourceName(order);
+      
+            if (sourceName === '71323942913') return '3';
+            if (sourceName === 'amazon') return '1';
+            if (sourceName === 'ebay') return '2';
+      
+            const customAttributesText = getCustomAttributesText(order);
+      
+            if (customAttributesText.indexOf('walmart') !== -1) return '3';
+            if (customAttributesText.indexOf('amazon') !== -1) return '1';
+            if (customAttributesText.indexOf('ebay') !== -1) return '2';
+      
+            return '4';
+          }
+      
+          function parseShopifyDateToNetSuiteDate(value) {
+            if (!value) return null;
+      
+            const date = new Date(value);
+      
+            if (isNaN(date.getTime())) {
+              return null;
+            }
+      
+            return date;
+          }
+      
+          function getAmount(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const amount = Number(value);
+            return isNaN(amount) ? null : amount;
+          }
+      
+          function buildItemMap(matchedItemsResult) {
+            const map = {};
+      
+            const matchedLineItems =
+              matchedItemsResult?.lineItems ||
+              matchedItemsResult?.items ||
+              [];
+      
+            matchedLineItems.forEach(function (line) {
+              if (!line?.sku) return;
+      
+              map[String(line.sku).trim()] = {
+                sku: String(line.sku).trim(),
+                netsuiteItemId: line.netsuiteItemId || line.internalId || line.itemId || null,
+                netsuiteItem: line.netsuiteItem || null
+              };
+            });
+      
+            return map;
+          }
+      
+          function getCustomerId(customerResult) {
+            return (
+              customerResult?.recordId ||
+              customerResult?.id ||
+              customerResult?.internalId ||
+              customerResult?.customerId ||
+              null
+            );
+          }
+      
+          function getShopifyDiscountAmount(order) {
+            return getAmount(
+              order?.currentTotalDiscountsSet?.shopMoney?.amount ||
+              order?.totalDiscountsSet?.shopMoney?.amount ||
+              0
+            ) || 0;
+          }
+      
+          function setNonTaxableItemLine(salesOrderRec) {
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'istaxable',
+              value: false,
+              forceSyncSourcing: true
+            });
+          }
+      
+          function addShopifyDiscountLine(salesOrderRec, discountAmount, isAmazonFbmOrder) {
+            const SHOPIFY_DISCOUNT_ITEM_ID = wfArguments.discountID;
+      
+            if (!discountAmount || discountAmount <= 0) {
+              return false;
+            }
+      
+            salesOrderRec.selectNewLine({
+              sublistId: 'item'
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'item',
+              value: SHOPIFY_DISCOUNT_ITEM_ID
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'quantity',
+              value: 1
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'price',
+              value: -1
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'rate',
+              value: -Math.abs(discountAmount)
+            });
+      
+            if (isAmazonFbmOrder) {
+              setNonTaxableItemLine(salesOrderRec);
+            }
+      
+            salesOrderRec.commitLine({
+              sublistId: 'item'
+            });
+      
+            return true;
+          }
+      
+          function getShopifyShippingAmount(order) {
+            return getAmount(
+              order?.shippingAmount ||
+              order?.totalShippingPrice ||
+              order?.totalShippingPriceSet?.shopMoney?.amount ||
+              0
+            ) || 0;
+          }
+      
+      
+          function setTransactionAddress(salesOrderRec, fieldId, addressData) {
+            if (!addressData) return;
+      
+            const addressSubrecord = salesOrderRec.getSubrecord({
+              fieldId: fieldId
+            });
+      
+            const addressee =
+              addressData.name ||
+              [addressData.firstName, addressData.lastName].filter(Boolean).join(' ').trim();
+      
+            if (addressData.countryCodeV2 || addressData.countryCode || addressData.country) {
+              addressSubrecord.setValue({
+                fieldId: 'country',
+                value: addressData.countryCodeV2 || addressData.countryCode || addressData.country
+              });
+            }
+      
+            if (addressee) {
+              addressSubrecord.setValue({
+                fieldId: 'addressee',
+                value: addressee
+              });
+            }
+      
+            if (addressData.company) {
+              addressSubrecord.setValue({
+                fieldId: 'attention',
+                value: addressData.company
+              });
+            }
+      
+            if (addressData.address1) {
+              addressSubrecord.setValue({
+                fieldId: 'addr1',
+                value: addressData.address1
+              });
+            }
+      
+            if (addressData.address2) {
+              addressSubrecord.setValue({
+                fieldId: 'addr2',
+                value: addressData.address2
+              });
+            }
+      
+            if (addressData.city) {
+              addressSubrecord.setValue({
+                fieldId: 'city',
+                value: addressData.city
+              });
+            }
+      
+            if (addressData.provinceCode || addressData.province) {
+              addressSubrecord.setValue({
+                fieldId: 'state',
+                value: addressData.provinceCode || addressData.province
+              });
+            }
+      
+            if (addressData.zip) {
+              addressSubrecord.setValue({
+                fieldId: 'zip',
+                value: addressData.zip
+              });
+            }
+      
+            if (addressData.phone) {
+              addressSubrecord.setValue({
+                fieldId: 'addrphone',
+                value: addressData.phone
+              });
+            }
+          }
+      
+          // -----------------------------
+          // Source data
+          // -----------------------------
+          const shopifyOrderId = getShopifyNumericId(order?.orderNumber);
+          const shopifyOrderName = order?.name;
+          const lineItems = getLineItems(order);
+          const shopifyOrderClass = getShopifyOrderClass(order);
+          const isAmazonFbmOrder = shopifyOrderClass === '1';
+          const itemMap = buildItemMap(matchedItemsResult);
+          const shopifyCreatedAt = order?.createdAt;
+          const transactionDate = parseShopifyDateToNetSuiteDate(shopifyCreatedAt);
+      
+          const customerId = getCustomerId(customerResult);
+      
+          if (!customerId) {
+            return {
+              success: false,
+              message: 'Missing NetSuite customer internal ID. Create or find the customer before creating the Sales Order.',
+              customerResult: customerResult
+            };
+          }
+      
+          if (!lineItems.length) {
+            return {
+              success: false,
+              message: 'No Shopify lineItems found on order.',
+              orderId: order?.id,
+              orderName: order?.name
+            };
+          }
+      
+          // -----------------------------
+          // Create Sales Order
+          // -----------------------------
+          const salesOrderRec = record.create({
+            type: 'salesorder',
+            isDynamic: true
+          });
+      
+          // Custom form should be one of the first fields if used
+          if (NETSUITE_CUSTOM_FORM_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'customform',
+              value: NETSUITE_CUSTOM_FORM_ID
+            });
+          }
+      
+          salesOrderRec.setValue({
+            fieldId: 'entity',
+            value: Number(customerId)
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'subsidiary',
+            value: NETSUITE_SUBSIDIARY_ID
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'csegdivision',
+            value: NETSUITE_CSEG_DIVISION
+          });
+      
+          if (transactionDate) {
+            salesOrderRec.setValue({
+              fieldId: 'trandate',
+              value: transactionDate
+            });
+          }
+      
+          if (DEFAULT_CURRENCY_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'currency',
+              value: DEFAULT_CURRENCY_ID
+            });
+          }
+      
+          if (NETSUITE_LOCATION_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'location',
+              value: NETSUITE_LOCATION_ID
+            });
+          }
+      
+          if (NETSUITE_ORDER_CLASS_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'class',
+              value: NETSUITE_ORDER_CLASS_ID
+            });
+          }
+      
+          if (shopifyOrderName) {
+            salesOrderRec.setValue({
+              fieldId: 'otherrefnum',
+              value: shopifyOrderName
+            });
+          }
+      
+          salesOrderRec.setValue({
+            fieldId: 'memo',
+            value: 'Shopify Order ' + (shopifyOrderName || shopifyOrderId || '')
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'custbody_shopify_ord_id',
+            value: shopifyOrderId
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'paymentmethod',
+            value: 60
+          });
+      
+          salesOrderRec.setValue({
+            fieldId: 'custbody_shopify_ord_class',
+            value: shopifyOrderClass
+          });
+          //
+          // salesOrderRec.setValue({
+          //   fieldId: 'custbody_shopify_order_name',
+          //   value: shopifyOrderName
+          // });
+      
+          // -----------------------------
+          // Addresses
+          // -----------------------------
+          if (order?.billingAddress) {
+            setTransactionAddress(salesOrderRec, 'billingaddress', order.billingAddress);
+          }
+      
+          if (order?.shippingAddress) {
+            setTransactionAddress(salesOrderRec, 'shippingaddress', order.shippingAddress);
+          }
+      
+          // -----------------------------
+          // Item Lines
+          // -----------------------------
+          lineItems.forEach(function (lineItem) {
+            const sku = String(lineItem.sku || '').trim();
+            const matchedItem = itemMap[sku];
+      
+            const quantity = toNumber(lineItem.quantity, 1);
+      
+            const unitPrice = getAmount(
+              lineItem.originalUnitPrice
+            );
+      
+            const rate = unitPrice;
+      
+            salesOrderRec.selectNewLine({
+              sublistId: 'item'
+            });
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'item',
+              value: Number(matchedItem.netsuiteItemId),
+              forceSyncSourcing: true
+            });
+      
+            if (NETSUITE_LOCATION_ID) {
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'location',
+                value: NETSUITE_LOCATION_ID,
+                forceSyncSourcing: true
+              });
+            }
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'quantity',
+              value: quantity,
+              forceSyncSourcing: true
+            });
+      
+            // Use custom price so NetSuite accepts Shopify price
+            if (rate !== null) {
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'price',
+                value: -1,
+                forceSyncSourcing: true
+              });
+      
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'rate',
+                value: rate,
+                forceSyncSourcing: true
+              });
+      
+              salesOrderRec.setCurrentSublistValue({
+                sublistId: 'item',
+                fieldId: 'amount',
+                value: rate * quantity,
+                forceSyncSourcing: true
+              });
+            }
+      
+            if (isAmazonFbmOrder) {
+              setNonTaxableItemLine(salesOrderRec);
+            }
+      
+            salesOrderRec.setCurrentSublistValue({
+              sublistId: 'item',
+              fieldId: 'description',
+              value: lineItem.title || sku
+            });
+      
+            salesOrderRec.commitLine({
+              sublistId: 'item'
+            });
+          });
+      
+          const discountAmount = getShopifyDiscountAmount(order);
+      
+          const discountLineAdded = addShopifyDiscountLine(
+            salesOrderRec,
+            discountAmount,
+            isAmazonFbmOrder
+          );
+      
+          const shippingAmount = getShopifyShippingAmount(order);
+      
+          if (shippingAmount > 0) {
+            salesOrderRec.setValue({
+              fieldId: 'shippingcost',
+              value: shippingAmount
+            });
+          }
+      
+          // -----------------------------
+          // Save
+          // -----------------------------
+          const salesOrderId = salesOrderRec.save({
+            enableSourcing: true,
+            ignoreMandatoryFields: false
+          });
+      
+          return {
+            success: true,
+            recordId: salesOrderId,
+            message: 'Sales Order created successfully',
+            shopifyOrderId: shopifyOrderId,
+            shopifyOrderName: shopifyOrderName,
+            customerId: customerId,
+            lineCount: lineItems.length,
+            discountAmount: discountAmount,
+            discountLineAdded: discountLineAdded,
+            shippingAmount,
+            isAmazonFbmOrder: isAmazonFbmOrder
+          };
+      
+        } catch (error) {
+          return {
+            success: false,
+            message: error.message,
+            stack: error.stack,
+            error: error
+          };
+        }
+      }
+      
+      execute();
+  - stepNumber: 16
+    name: "Shopify - Add Tag: Exported"
+    results: 1
+    type: action
+    args:
+      - label: Query
+        value: |-
+          mutation tagsAdd($id: ID!, $tags: [String!]!)
+            {
+              tagsAdd(id: $id, tags: $tags) {
+                node {
+                  ... on Order {
+                    id
+                    tags
+                    }
+                  }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+      - label: Variables
+        value: { id: "step3.ShopifyGid", tags: ["Exported"] }

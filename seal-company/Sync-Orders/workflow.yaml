@@ -1,0 +1,285 @@
+workflow:
+  name: Acumatica to HubSpot - Sync Orders
+  id: fRkZbu49XTjo
+  version: 0.0.7
+  isActive: false
+  publishedOn: 2026-06-02T22:08:34.000Z
+triggers:
+  - name: Webhook - Webhook
+    type: webhook
+    message: Webhook
+steps:
+  - stepNumber: 1
+    name: Map - Extract Inserted Orders
+    input: 1kHcTj8xB2WT
+    results: 1
+    type: map
+    code: |-
+      // Get the webhook data array
+      const webhookData = input.webhookB2WT;
+
+      // Access the body from the first webhook event
+      const body = webhookData?.[0]?.body;
+
+      // Extract inserted orders, defaulting to empty array if not found
+      const insertedOrders = body?.Inserted[0] || [];
+
+      // Return the inserted orders as-is (OrderNbr, Date, LineTotal, OpportunityID)
+      return insertedOrders;
+  - stepNumber: 2
+    name: If/Else - Has Opportunity ID?
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].OpportunityID] nempty null"
+  - stepNumber: 3
+    name: Map - Build Search Filter Payload
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const payload = input.mapVGHC[0];
+
+      // Build the HubSpot search filter payload to find deals
+      // matching the current order's OpportunityID
+      return [
+        {
+          filters: [
+            {
+              propertyName: "acumatica_opportunity_id",
+              operator: "EQ",
+              value: String(payload?.OpportunityID)
+            }
+          ]
+        }
+      ];
+  - stepNumber: 4
+    name: Hubspot App - Search HubSpot Deal by Opportunity ID
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 3: input]"
+  - stepNumber: 5
+    name: If/Else - Deal Found?
+    type: conditional
+    condition: "[Step 4: input[0].id] nempty null"
+  - stepNumber: 6
+    name: Map - Build Update Properties (Opportunity-Linked)
+    input: Step 4, Step 1
+    results: 1
+    type: map
+    code: |-
+      const payload = input.mapVGHC[0];
+      const searchResult = input.hubspotAppSearchDealsJI6S[0];
+
+      const dealId = searchResult?.id;
+
+      // Convert datetime string to epoch milliseconds (midnight UTC)
+      function toEpochMs(dateStr) {
+        if (!dateStr) return null;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return null;
+        const normalized = new Date(d.toISOString().split('T')[0] + 'T00:00:00.000Z');
+        return normalized.getTime();
+      }
+
+      const properties = {
+        order_number: payload?.OrderNbr != null ? String(payload.OrderNbr) : null,
+        order_date: toEpochMs(payload?.Date),
+        order_total: payload?.LineTotal != null ? String(payload.LineTotal) : null,
+        order_created: "Yes",
+        dealstage: "closedwon"
+      };
+
+      return [{
+        dealId,
+        properties
+      }];
+  - stepNumber: 7
+    name: Hubspot App - Update Deal - Order Fields (Opportunity-Linked)
+    type: action
+    args:
+      - label: Deal Id
+        value: "[Step 6: input[0].dealId]"
+  - stepNumber: 8
+    name: Flow Control - Log Error - Deal Not Found for Opportunity
+    type: action
+    args:
+      - label: Action
+        value: doNothing
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: error
+      - label: Log Message
+        value: "ERROR: No HubSpot deal found matching Acumatica Opportunity ID: "
+      - label: Send Email
+        value: "true"
+      - label: Email To
+        value: tim.nix@example.com, implementation@mindcloud.com
+      - label: Email Subject
+        value: "ERROR: No HubSpot Deal Found for Acumatica Opportunity ID: "
+      - label: Email Body
+        value: "ERROR: No HubSpot deal found matching Acumatica Opportunity ID: "
+  - stepNumber: 9
+    name: Map - Build Company & Contact Search Filters
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const order = input.mapVGHC[0];
+
+      // Filter to search HubSpot companies by Acumatica Customer ID
+      const companyFilters = [{
+        filters :[
+          {
+            propertyName: "acumatica_customer_id",
+            operator: "EQ",
+            value: String(order?.Customer ?? "").trim()
+          },
+          {
+            propertyName: "acumatica_location_id",
+            operator: "EQ",
+            value: "MAIN"
+          }
+        ]
+      }]
+
+      // Filter to search HubSpot contacts by Acumatica Contact ID
+      const contactFilters = [{
+        filters: [
+          {
+            propertyName: "acumatica_contact_id",
+            operator: "EQ",
+            value: String(order?.Contact ?? "").trim()
+          }
+        ]
+      }];
+
+      return [{ companyFilters, contactFilters }];
+  - stepNumber: 10
+    name: Hubspot App - Search HubSpot Company by Customer ID
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 9: input[0].companyFilters]"
+  - stepNumber: 11
+    name: Hubspot App - Search HubSpot Contact by Contact ID
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 9: input[0].contactFilters]"
+  - stepNumber: 12
+    name: Hubspot App - Search for existing direct order (No Opportunity)
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[{"
+  - stepNumber: 13
+    name: If/Else - If Id Is Not Empty
+    results: 1
+    type: conditional
+    condition: "[Step 12: input[0].id] nempty null"
+  - stepNumber: 14
+    name: Hubspot App - Update Deal - Direct Order (No Opportunity)
+    results: 1
+    type: action
+    properties: '{ "amount": "'
+    args:
+      - label: Deal Id
+        value: "[Step 12: input[0].id]"
+  - stepNumber: 15
+    name: Hubspot App - Create Deal - Direct Order (No Opportunity)
+    results: 1
+    type: action
+    args:
+      - label: Properties.dealname
+        value: "Direct Order - "
+      - label: Properties.dealstage
+        value: closedwon
+      - label: Properties.origin type
+        value: Direct Order
+      - label: Properties.amount
+        value: "[Step 1: input[0].LineTotal]"
+      - label: Associations[0].to.id
+        value: "[Step 11: input[0].id]"
+      - label: Associations[0].types[0].association Category
+        value: HUBSPOT_DEFINED
+      - label: Associations[0].types[0].association Type Id
+        value: "3"
+      - label: Associations[1].types[0].association Category
+        value: HUBSPOT_DEFINED
+      - label: Associations[1].types[0].association Type Id
+        value: "341"
+      - label: Associations[1].to.id
+        value: "[Step 10: input[0].id]"
+      - label: Properties.pipeline
+        value: default
+  - stepNumber: 16
+    name: Map - Build Update Properties (Direct Order)
+    input: Step 15, Step 1, Step 14
+    results: 1
+    type: map
+    code: |-
+      // Convert datetime string to epoch milliseconds (midnight UTC)
+      function toEpochMs(dateStr) {
+        if (!dateStr) return null;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return null;
+        const normalized = new Date(d.toISOString().split('T')[0] + 'T00:00:00.000Z');
+        return normalized.getTime();
+      }
+
+      // Acumatica Owner ID -> HubSpot Owner ID
+      const acumaticaOwnerToHubspot = {
+        '127053': '7321575',       // TIMOTHY NIX
+        '116638': '26951785',      // Walter Martinez
+        '130063': '80596682',      // Ashley Nelson
+        '130077': '80771250',      // Tara Cabaniss
+        '130078': '80771273',      // Tamara Wood
+        '127386': '185671876',     // Britt Cabral
+        '129187': '204240096',     // Larry Woods
+        '125541': '205658988',     // Jolene Ramos
+        '116616': '215835954',     // Jim Whorton
+        '116628': '273828897',     // Robert Lee
+        '128351': '601051234',     // Luke Starry
+        '127535': '690603772',     // Peggy Cole
+        '129520': '928040643',     // Jeff Patterson
+        '116631': '1116181631',    // Ryan Sperry
+        '129089': '1215258143',    // Jeff Price
+        '116629': '1502551068',    // Rachel Motte
+        '125930': '1716729933',    // Tyler Garza
+        '116609': '1772285574',    // Chris Barger
+        '116612': '1919764494',    // Greg Lohse
+        '116606': '1964590240',    // David Oldham
+        '129262': '2086206935',    // Chris Hebert
+      };
+
+      const order = input.mapVGHC?.[0];
+      const createdDeal = input.hubspotAppCreateDealWGRY?.[0];
+      const updatedDeal = input.hubspotAppUpdateDealByIdGJBY?.[0];
+
+      const dealId = createdDeal?.id || updatedDeal?.id;
+
+      const acumaticaOwnerId = String(order?.Owner ?? "").trim();
+      const hubspotOwnerId = acumaticaOwnerToHubspot[acumaticaOwnerId] || null;
+
+      const properties = {
+        order_number: order?.OrderNbr != null ? String(order.OrderNbr) : null,
+        order_date: toEpochMs(order?.Date),
+        order_total: order?.LineTotal != null ? String(order.LineTotal) : null,
+        order_created: "Yes",
+        origin_type: "Direct Order",
+        hubspot_owner_id: hubspotOwnerId
+      };
+
+      return [{ dealId, properties }];
+  - stepNumber: 17
+    name: Hubspot App - Update Direct Order Deal - Custom Fields
+    results: 1
+    type: action
+    args:
+      - label: Deal Id
+        value: "[Step 16: input[0].dealId]"

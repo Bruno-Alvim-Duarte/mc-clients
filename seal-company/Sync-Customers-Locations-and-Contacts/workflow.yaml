@@ -1,0 +1,788 @@
+workflow:
+  name: Acumatica to HubSpot - Sync Customers, Locations and Contacts
+  id: D19fDl2itAOT
+  version: draft
+  isActive: false
+  publishedOn: 2026-06-03T15:13:28.000Z
+triggers:
+  - name: Schedule - Run daily, only on weekdays
+    type: schedule
+    message: Run daily, only on weekdays
+    schedule:
+      mode: interval
+      days:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+      dayNames:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+      intervalMs: 86400000
+steps:
+  - stepNumber: 1
+    name: Map - Build Acumatica Date Filter
+    input: ErRukEcIAiti
+    type: map
+    code: |-
+      // Get the last synced date from memory
+      const lastSyncedDate = input.memory?.LastSyncedDate;
+
+      // Get current timestamp in ISO 8601 format
+      const currentTimestamp = new Date().toISOString();
+
+      let filterUsed;
+
+      // Check if lastSyncedDate exists and is not null, undefined, or empty
+      if (lastSyncedDate != null && lastSyncedDate !== '') {
+        // Set filter with the last synced date
+        filterUsed = "LastModifiedDateTime gt datetimeoffset'" + lastSyncedDate + "'";
+      } else {
+        // Set empty filter string
+        filterUsed = "";
+      }
+
+      return [{ 
+        filter: filterUsed,
+        syncStartedAt: currentTimestamp,
+      }];
+  - stepNumber: 2
+    name: Acumatica - Fetch Acumatica Customers
+    type: action
+    pagination:
+      page: "0"
+      pageSize: 50
+    args:
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: "[Step 1: data[0].filter]"
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Expand
+        value: MainContact, MainContact/Address
+    children:
+      - stepNumber: 3
+        name: Map - Count Customers to Sync
+        input: Step 2
+        type: map
+        code: |-
+          // Get the customers array from the input step
+          const customers = input.acumaticaSearchByEntitySNHC;
+
+          // Count the number of customers
+          const customerCount = customers?.length || 0;
+
+          // Return the count in an array with a single object
+          return [{ customerCount }];
+      - stepNumber: 4
+        name: "If/Else - If: No Customers to Sync?"
+        type: conditional
+        condition: "[Step 3: input[0].data[0].customerCount] = 0"
+      - stepNumber: 6
+        name: "Flow Control - LOG: Sync started"
+        type: action
+        args:
+          - label: Action
+            value: doNothing
+          - label: Emit Log
+            value: Yes
+          - label: Log Type
+            value: info
+          - label: Log Message
+            value: "[SYNC_STARTED] syncStartedAt: "
+      - stepNumber: 7
+        name: "Iterate - Loop: Each Customer"
+        type: loop
+        loopTarget:
+          stepNumber: 2
+          name: Acumatica - Fetch Acumatica Customers
+        children:
+          - stepNumber: 8
+            name: Function - Search for Companies Matches
+            type: action
+            args:
+              - label: Acumatica Customer
+                value: "[Step 7: input]"
+          - stepNumber: 9
+            name: "If/Else - If: Company Match is Ambiguous?"
+            type: conditional
+            condition: "[Step 8: input[0].status] = ambiguous_match"
+          - stepNumber: 44
+            name: Map - Build Customer Summary
+            input: Step 7, Step 8, Step 13, Step 14, Step 25, Step 35, Step 36, Step 40
+            type: map
+            code: |-
+              // Customer info
+              const customer = input.iterateEIVA?.[0];
+              const customerId = customer?.customerID?.value || 'unknown';
+              const customerName = customer?.customerName?.value || 'unknown';
+
+              // Company match result
+              const match = input.functionRGEY?.[0];
+              const matchStatus = match?.status || 'no_match';
+              const hubspotCompanyId = match?.hubspotCompanyId || 'none';
+              const confidence = match?.confidenceScore || 0;
+
+              // Determine what happened
+              let companyAction, parentId;
+              if (matchStatus === 'ambiguous_match') {
+                // Ambiguous — was skipped by the ambiguous check
+                companyAction = 'SKIPPED (ambiguous)';
+                parentId = hubspotCompanyId;
+              } else if (matchStatus === 'matched_by_id' || matchStatus === 'matched_by_confidence') {
+                // Confident match — updated
+                companyAction = 'UPDATED';
+                parentId = hubspotCompanyId;
+              } else {
+                // No match — created new
+                companyAction = 'CREATED';
+                parentId = input.hubspotAppCreateCompanyNKG5?.[0]?.id || 'failed';
+              }
+
+              // Location counts (from whichever branch ran)
+              const locsThen = input.acumaticaSearchByEntity2JBY;
+              const locsElse = input.acumaticaSearchByEntityLAR2;
+              const locationCount = locsThen?.length || locsElse?.length || 0;
+
+              // Contact counts (from whichever branch ran)
+              const contactsThen = input.acumaticaSearchByEntityD3IZ;
+              const contactsElse = input.acumaticaSearchByEntity7PE2;
+              const contactCount = contactsThen?.length || contactsElse?.length || 0;
+
+              // Build summary
+              const summary = `[CUSTOMER] ${customerId} (${customerName}) | company: ${companyAction} | confidence: ${confidence} | hubspotId: ${parentId} | locations: ${locationCount} | contacts: ${contactCount}`;
+
+              return [{ summary }];
+          - stepNumber: 45
+            name: "Flow Control - LOG: Customer Summary"
+            type: action
+            args:
+              - label: Action
+                value: doNothing
+              - label: Emit Log
+                value: "true"
+              - label: Log Type
+                value: info
+              - label: Log Message
+                value: "[Step 44: data[0].summary]"
+          - stepNumber: 46
+            name: "Flow Control - LOG: Sync Completed"
+            type: action
+            args:
+              - label: Action
+                value: doNothing
+              - label: Emit Log
+                value: "true"
+              - label: Log Type
+                value: info
+              - label: Log Message
+                value: "[SYNC_COMPLETED] syncStartedAt="
+          - stepNumber: 47
+            name: If/Else - If Customer Count < 50
+            type: conditional
+            condition: "[Step 3: input[0].customerCount] < 50"
+  - stepNumber: 5
+    name: "Flow Control - LOG: Nothing to Sync — Exit Early"
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "[SYNC_COMPLETED] No customers modified since last sync. Filter used: "
+      - label: Send Email
+        value: "false"
+  - stepNumber: 10
+    name: "Flow Control - ALERT: Ambiguous Company Match — Email + Skip"
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "[AMBIGUOUS_COMPANY_SKIPPED] customer="
+      - label: Send Email
+        value: "true"
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com
+      - label: Email Subject
+        value: "[ACTION REQUIRED] Ambiguous Company Match "
+      - label: Email Body
+        value: |-
+          An ambiguous company match was found and requires human review.
+
+          Customer ID: 
+  - stepNumber: 11
+    name: "If/Else - If: HubSpot Company Found?"
+    type: conditional
+    condition: "[Step 8: input[0].status] = matched_by_id OR [Step 8: input[0].status] = matched_by_confidence"
+  - stepNumber: 12
+    name: Map - Escape & Build Parent Company Properties
+    input: Step 7, Step 8
+    type: map
+    code: |-
+      // Get the customer data from input
+      const customer = input.iterateEIVA?.[0];
+      const mainContact = customer?.mainContact;
+      const address = mainContact?.address;
+
+      // Helper function to safely get values and convert null/undefined to empty string
+      const safeValue = (val) => val ?? '';
+
+      // Build the properties object with all required fields
+      const propertiesObject = {
+        name: safeValue(customer?.customerName?.value),
+        acumatica_customer_id: safeValue(customer?.customerID?.value),
+        phone: safeValue(mainContact?.phone1?.value),
+        address: safeValue(address?.addressLine1?.value),
+        acumatica_location_id: 'MAIN',
+        domain: safeValue(mainContact?.webSite?.value),
+        zip: safeValue(address?.postalCode?.value),
+        city: safeValue(address?.city?.value),
+        state: safeValue(address?.state?.value),
+        country: safeValue(address?.country?.value),
+        acumatica_industry_class: safeValue(customer?.customerClass?.value)
+      };
+
+      // Convert to JSON string using JSON.stringify (automatically handles escaping)
+      const propertiesJsonString = JSON.stringify(propertiesObject);
+
+      // Return as array with single output field
+      return [{
+        properties: propertiesJsonString
+      }];
+  - stepNumber: 13
+    name: "Hubspot App - THEN: Update Existing Parent Company"
+    type: action
+    args:
+      - label: Company Id
+        value: "[Step 8: input[0].hubspotCompanyId]"
+  - stepNumber: 14
+    name: Acumatica - GET CustomerLocation from current Customer
+    type: action
+    pagination:
+      page: "0"
+      pageSize: 250
+    args:
+      - label: Entity
+        value: CustomerLocation
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: Customer eq '
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Expand
+        value: LocationContact, LocationContact/Address
+  - stepNumber: 15
+    name: "Iterate - Loop: Each Location"
+    type: loop
+    loopTarget:
+      stepNumber: 14
+      name: Acumatica - GET CustomerLocation from current Customer
+    children:
+      - stepNumber: 16
+        name: Function - Acumatica Location → HubSpot Child Company Search & Match
+        type: action
+        args:
+          - label: Acumatica Location
+            value: "[Step 15: input]"
+          - label: Parent I D
+            value: "[Step 8: input[0].hubspotCompanyId]"
+      - stepNumber: 17
+        name: "If/Else - If: Child Company Match is Ambiguous?"
+        type: conditional
+        condition: "[Step 16: input[0].status] = ambiguous_match"
+  - stepNumber: 18
+    name: "Flow Control - ALERT: Ambiguous Child Match — Email + Skip"
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "[AMBIGUOUS_CHILD_SKIPPED] customer="
+      - label: Send Email
+        value: "true"
+      - label: Email To
+        value: bruno@mindcloud.co, tnix@sealcompany.com
+      - label: Email Subject
+        value: "[ACTION REQUIRED] Ambiguous Child Company Match - "
+      - label: Email Body
+        value: An ambiguous child company match was found and requires huma...
+  - stepNumber: 19
+    name: "If/Else - If: Hubspot Child Company Found?"
+    type: conditional
+    condition: "[Step 16: input[0].status] = matched_by_id OR [Step 16: input[0].status] = matched_by_confidence"
+  - stepNumber: 20
+    name: Map - Escape & Build Child Company Properties
+    input: Step 7, Step 8, Step 15, Step 16
+    type: map
+    code: |-
+      // Helper function to convert null/undefined to empty string
+      const safeValue = (value) => value ?? '';
+
+      // Get values from input data
+      const parentName = input.functionRGEY?.[0]?.hubspotCompany?.properties?.name;
+      const locationName = input.iterate9TK8?.[0]?.locationName?.value;
+      const locationID = input.iterate9TK8?.[0]?.locationID?.value;
+      const addressLine1 = input.iterate9TK8?.[0]?.addressLine1?.value;
+      const customerID = input.iterateEIVA?.[0]?.customerID?.value;
+      const zip = input.iterate9TK8?.[0]?.locationContact?.address?.postalCode?.value;
+      const city = input.iterate9TK8?.[0]?.locationContact?.address?.city?.value;
+      const state = input.iterate9TK8?.[0]?.locationContact?.address?.state?.value;
+      const country = input.iterate9TK8?.[0]?.locationContact?.address?.country?.value;
+      const acumaticaIndustryClass = input.iterateEIVA?.[0]?.customerClass?.value
+
+      // Build the properties object
+      const propertiesObject = {
+        name: safeValue(parentName) + " - " + safeValue(locationName) + " - " + safeValue(locationID),
+        address: safeValue(addressLine1),
+        acumatica_location_id: safeValue(locationID),
+        acumatica_customer_id: safeValue(customerID),
+        zip: safeValue(zip),
+        city: safeValue(city),
+        state: safeValue(state),
+        country: safeValue(country),
+        acumatica_industry_class: safeValue(acumaticaIndustryClass)
+      };
+
+      // Return the result with stringified properties
+      return [{ properties: JSON.stringify(propertiesObject) }];
+  - stepNumber: 21
+    name: Hubspot App - Update Name and Address
+    type: action
+    args:
+      - label: Company Id
+        value: "[Step 16: input[0].hubspotCompanyId]"
+  - stepNumber: 22
+    name: Hubspot App - Create Association Child Company - Company
+    type: action
+    args:
+      - label: From Object Type
+        value: Companies
+      - label: To Object Type
+        value: Companies
+      - label: Inputs[0].type
+        value: "13"
+      - label: Inputs[0].to.id
+        value: "[Step 16: input[0].hubspotCompanyId]"
+      - label: Inputs[0].from.id
+        value: "[Step 8: input[0].hubspotCompanyId]"
+  - stepNumber: 23
+    name: If/Else - If isn't MAIN Location
+    type: conditional
+    condition: "[Step 15: input[0].locationID.value] ne MAIN"
+  - stepNumber: 24
+    name: Hubspot App - Create Child Company
+    type: action
+    args:
+      - label: Properties.name
+        value: "[Step 8: input[0].hubspotCompany.properties.name]"
+      - label: Associations[0].to.id
+        value: "[Step 8: input[0].hubspotCompanyId]"
+      - label: Associations[0].types[0].association Type Id
+        value: "14"
+      - label: Properties.address
+        value: "[Step 15: input[0].addressLine1.value]"
+      - label: Properties.acumatica customer id
+        value: "[Step 7: input[0].customerID.value]"
+      - label: Properties.acumatica location id
+        value: "[Step 15: input[0].locationID.value]"
+      - label: Properties.phone
+        value: "[Step 15: input[0].locationContact.phone1.value]"
+      - label: Properties.city
+        value: "[Step 15: input[0].locationContact.address.city.value]"
+      - label: Properties.state
+        value: "[Step 15: input[0].locationContact.address.state.value]"
+      - label: Properties.zip
+        value: "[Step 15: input[0].locationContact.address.postalCode.value]"
+      - label: Properties.country
+        value: "[Step 15: input[0].locationContact.address.country.value]"
+      - label: Properties.acumatica industry class
+        value: "[Step 7: input[0].customerClass.value]"
+  - stepNumber: 25
+    name: Acumatica - GET Contacts from Customer
+    type: action
+    args:
+      - label: Entity
+        value: Contact
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: BusinessAccount eq '
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+  - stepNumber: 26
+    name: "Iterate - Loop: Each Contact"
+    type: loop
+    loopTarget:
+      stepNumber: 25
+      name: Acumatica - GET Contacts from Customer
+    children:
+      - stepNumber: 27
+        name: Function - Acumatica Contact → HubSpot Contact Search & Match
+        type: action
+        args:
+          - label: Acumatica Contact
+            value: "[Step 26: input]"
+          - label: Bussiness Account Id
+            value: "[Step 7: input[0].customerID.value]"
+      - stepNumber: 28
+        name: "Map - Map Contact: Name, Phone & Mobile Logic"
+        input: Step 26
+        type: map
+        code: |-
+          // Get all contacts from the Acumatica fetch step
+          const contacts = input.iterateKEKC || [];
+
+          // Helper function to safely get value from nested object
+          const getValue = (obj) => obj?.value ?? '';
+
+          // Process each contact and return the transformed array
+          return contacts.map((contact) => {
+            // 1. Determine firstName and lastName
+            let firstName = getValue(contact.firstName);
+            let lastName = getValue(contact.lastName);
+
+            // If both firstName and lastName are empty, split displayName
+            if (!firstName && !lastName) {
+              const displayName = getValue(contact.displayName);
+              const nameParts = displayName.split(' ');
+              firstName = nameParts[0] || '';
+              lastName = nameParts.slice(1).join(' ') || '';
+            }
+
+            // 2. Determine business phone
+            const phone1Type = getValue(contact.phone1Type).toLowerCase();
+            const phone2Type = getValue(contact.phone2Type).toLowerCase();
+            const phone1Value = getValue(contact.phone1);
+            const phone2Value = getValue(contact.phone2);
+
+            let businessPhone = '';
+            if (phone1Type.includes('business')) {
+              businessPhone = phone1Value;
+            } else if (phone2Type.includes('business')) {
+              businessPhone = phone2Value;
+            }
+
+            // 3. Determine mobile phone
+            let mobilePhone = '';
+            if (phone1Type === 'cell') {
+              mobilePhone = phone1Value;
+            } else if (phone2Type === 'cell') {
+              mobilePhone = phone2Value;
+            }
+
+            // 4. Fallback: if both businessPhone and mobilePhone are empty, use phone1Value or phone2Value
+            if (!businessPhone && !mobilePhone && phone1Value) {
+              businessPhone = phone1Value;
+            } else if (!businessPhone && !mobilePhone && phone2Value) {
+              businessPhone = phone2Value;
+            }
+
+            // 5. Return the transformed contact object
+            return {
+              firstName: firstName,
+              lastName: lastName,
+              email: getValue(contact.email),
+              phone: businessPhone,
+              mobilePhone: mobilePhone,
+              jobTitle: getValue(contact.jobTitle),
+              contactID: getValue(contact.contactID),
+              displayName: getValue(contact.displayName),
+              companyName: getValue(contact.companyName)
+            };
+          });
+      - stepNumber: 29
+        name: "If/Else - If: Contact Match is Ambiguous?"
+        type: conditional
+        condition: "[Step 27: input[0].status] = ambiguous_match"
+  - stepNumber: 30
+    name: "Flow Control - ALERT: Ambiguous Contact Match — Email + Skip"
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: warning
+      - label: Log Message
+        value: "[AMBIGUOUS_CONTACT_SKIPPED] customer="
+      - label: Send Email
+        value: "true"
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com
+      - label: Email Subject
+        value: "[ACTION REQUIRED] Ambiguous Contact Match - "
+      - label: Email Body
+        value: |-
+          An ambiguous contact match was found and requires human review.
+
+          Customer ID: 
+  - stepNumber: 31
+    name: "If/Else - If: Contact Matched by ID?"
+    type: conditional
+    condition: "[Step 27: input[0].status] = matched_by_id OR [Step 27: input[0].status] = matched_by_confidence"
+  - stepNumber: 32
+    name: Hubspot App - Update Contact by ID
+    type: action
+    args:
+      - label: Contact Id
+        value: "[Step 27: input[0].hubspotContactId]"
+      - label: Properties.firstname
+        value: "[Step 28: input[0].firstName]"
+      - label: Properties.lastname
+        value: "[Step 28: input[0].lastName]"
+      - label: Properties.email
+        value: "[Step 28: input[0].email]"
+      - label: Properties.phone
+        value: "[Step 28: input[0].phone]"
+      - label: Properties.mobilephone
+        value: "[Step 28: input[0].mobilePhone]"
+      - label: Properties.jobtitle
+        value: "[Step 28: input[0].jobTitle]"
+      - label: Properties.acumatica contact id
+        value: "[Step 27: input[0].acumaticaContactId]"
+  - stepNumber: 33
+    name: Hubspot App - Create Association Contact - Company
+    type: action
+    args:
+      - label: Inputs[0].to.id
+        value: "[Step 8: input[0].hubspotCompanyId]"
+      - label: Inputs[0].from.id
+        value: "[Step 27: input[0].hubspotContactId]"
+      - label: Inputs[0].type
+        value: contact_to_company
+      - label: From Object Type
+        value: Contacts
+      - label: To Object Type
+        value: Companies
+  - stepNumber: 34
+    name: Hubspot App - Create Contact
+    type: action
+    args:
+      - label: Properties.firstname
+        value: "[Step 28: input[0].firstName]"
+      - label: Properties.lastname
+        value: "[Step 28: input[0].lastName]"
+      - label: Properties.email
+        value: "[Step 28: input[0].email]"
+      - label: Properties.phone
+        value: "[Step 28: input[0].phone]"
+      - label: Properties.mobilephone
+        value: "[Step 28: input[0].mobilePhone]"
+      - label: Properties.jobtitle
+        value: "[Step 28: input[0].jobTitle]"
+      - label: Associations[0].to.id
+        value: "[Step 8: input[0].hubspotCompanyId]"
+      - label: Associations[0].types[0].association Type Id
+        value: "279"
+      - label: Properties.acumatica contact id
+        value: "[Step 27: input[0].acumaticaContactId]"
+  - stepNumber: 35
+    name: Hubspot App - Create Parent Company
+    type: action
+    args:
+      - label: Properties.name
+        value: "[Step 7: input[0].customerName.value]"
+      - label: Properties.domain
+        value: "[Step 7: input[0].mainContact.webSite.value]"
+      - label: Properties.city
+        value: "[Step 7: input[0].mainContact.address.city.value]"
+      - label: Properties.phone
+        value: "[Step 7: input[0].mainContact.phone1.value]"
+      - label: Properties.state
+        value: "[Step 7: input[0].mainContact.address.state.value]"
+      - label: Properties.address
+        value: "[Step 7: input[0].mainContact.address.addressLine1.value]"
+      - label: Properties.acumatica customer id
+        value: "[Step 7: input[0].customerID.value]"
+      - label: Properties.acumatica location id
+        value: MAIN
+      - label: Properties.zip
+        value: "[Step 7: input[0].mainContact.address.postalCode.value]"
+      - label: Properties.country
+        value: "[Step 7: input[0].mainContact.address.country.value]"
+      - label: Properties.acumatica industry class
+        value: "[Step 7: input[0].customerClass.value]"
+  - stepNumber: 36
+    name: Acumatica - GET CustomerLocation from current Customer
+    type: action
+    args:
+      - label: Entity
+        value: CustomerLocation
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: Customer eq '
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Expand
+        value: LocationContact, LocationContact/Address
+  - stepNumber: 37
+    name: "Iterate - Loop: Each Location"
+    type: loop
+    loopTarget:
+      stepNumber: 36
+      name: Acumatica - GET CustomerLocation from current Customer
+    children:
+      - stepNumber: 38
+        name: If/Else - If Value != MAIN
+        type: conditional
+        condition: "[Step 37: input[0].locationID.value] ne MAIN"
+  - stepNumber: 39
+    name: Hubspot App - Create Child Company
+    type: action
+    args:
+      - label: Properties.name
+        value: "[Step 35: input[0].properties.name]"
+      - label: Associations[0].to.id
+        value: "[Step 35: input[0].id]"
+      - label: Associations[0].types[0].association Type Id
+        value: "14"
+      - label: Properties.address
+        value: "[Step 37: input[0].addressLine1.value]"
+      - label: Properties.acumatica customer id
+        value: "[Step 7: input[0].customerID.value]"
+      - label: Properties.acumatica location id
+        value: "[Step 37: input[0].locationID.value]"
+      - label: Properties.phone
+        value: "[Step 37: input[0].locationContact.phone1.value]"
+      - label: Properties.state
+        value: "[Step 37: input[0].locationContact.address.state.value]"
+      - label: Properties.domain
+        value: "[Step 37: input[0].locationContact.webSite.value]"
+      - label: Properties.city
+        value: "[Step 37: input[0].locationContact.address.city.value]"
+      - label: Properties.zip
+        value: "[Step 37: input[0].locationContact.address.postalCode.value]"
+      - label: Properties.country
+        value: "[Step 37: input[0].locationContact.address.country.value]"
+      - label: Properties.acumatica industry class
+        value: "[Step 7: input[0].customerClass.value]"
+  - stepNumber: 40
+    name: Acumatica - GET Contacts from current Customer
+    type: action
+    args:
+      - label: Entity
+        value: Contact
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: BusinessAccount eq '
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+  - stepNumber: 41
+    name: "Map - Map Contact: Name, Phone & Mobile Logic"
+    input: Step 40
+    type: map
+    code: |-
+      // Get all contacts from the Acumatica fetch step
+      const contacts = input.acumaticaSearchByEntity7PE2 || [];
+
+      // Helper function to safely get value from nested object
+      const getValue = (obj) => obj?.value ?? '';
+
+      // Process each contact and return the transformed array
+      return contacts.map((contact) => {
+        // 1. Determine firstName and lastName
+        let firstName = getValue(contact.firstName);
+        let lastName = getValue(contact.lastName);
+
+        // If both firstName and lastName are empty, split displayName
+        if (!firstName && !lastName) {
+          const displayName = getValue(contact.displayName);
+          const nameParts = displayName.split(' ');
+          firstName = nameParts[0] || '';
+          lastName = nameParts.slice(1).join(' ') || '';
+        }
+
+        // 2. Determine business phone
+        const phone1Type = getValue(contact.phone1Type).toLowerCase();
+        const phone2Type = getValue(contact.phone2Type).toLowerCase();
+        const phone1Value = getValue(contact.phone1);
+        const phone2Value = getValue(contact.phone2);
+
+        let businessPhone = '';
+        if (phone1Type.includes('business')) {
+          businessPhone = phone1Value;
+        } else if (phone2Type.includes('business')) {
+          businessPhone = phone2Value;
+        }
+
+        // 3. Determine mobile phone
+        let mobilePhone = '';
+        if (phone1Type === 'cell') {
+          mobilePhone = phone1Value;
+        } else if (phone2Type === 'cell') {
+          mobilePhone = phone2Value;
+        }
+
+        // 4. Fallback: if both businessPhone and mobilePhone are empty, use phone1Value or phone2Value
+        if (!businessPhone && !mobilePhone && phone1Value) {
+          businessPhone = phone1Value;
+        } else if (!businessPhone && !mobilePhone && phone2Value) {
+          businessPhone = phone2Value;
+        }
+
+        // 5. Return the transformed contact object
+        return {
+          firstName: firstName,
+          lastName: lastName,
+          email: getValue(contact.email),
+          phone: businessPhone,
+          mobilePhone: mobilePhone,
+          jobTitle: getValue(contact.jobTitle),
+          contactID: getValue(contact.contactID),
+          displayName: getValue(contact.displayName),
+          companyName: getValue(contact.companyName)
+        };
+      });
+  - stepNumber: 42
+    name: "Iterate - Loop: Each Contact"
+    type: loop
+    loopTarget:
+      stepNumber: 41
+      name: "Map - Map Contact: Name, Phone & Mobile Logic"
+    children:
+      - stepNumber: 43
+        name: Hubspot App - Create Contact
+        type: action
+        args:
+          - label: Associations[0].to.id
+            value: "[Step 35: input[0].id]"
+          - label: Associations[0].types[0].association Type Id
+            value: "279"
+          - label: Properties.firstname
+            value: "[Step 42: input[0].firstName]"
+          - label: Properties.lastname
+            value: "[Step 42: input[0].lastName]"
+          - label: Properties.email
+            value: "[Step 42: input[0].email]"
+          - label: Properties.phone
+            value: "[Step 42: input[0].phone]"
+          - label: Properties.jobtitle
+            value: "[Step 42: input[0].jobTitle]"
+          - label: Properties.mobilephone
+            value: "[Step 42: input[0].mobilePhone]"
+          - label: Properties.acumatica contact id
+            value: "[Step 42: input[0].contactID]"
+  - stepNumber: 48
+    name: "Memory - Set Memory: LastSyncedDate"
+    type: memory

@@ -1,0 +1,715 @@
+workflow:
+  name: NetSuite to Shopify - Update Shipments
+  id: 3xVPLHlssY94
+  version: 0.0.12
+  isActive: true
+  publishedOn: 2026-05-29T12:35:14.000Z
+triggers:
+  - name: Schedule - Run every 30 minutes, daily
+    type: schedule
+    message: Run every 30 minutes, daily
+    schedule:
+      mode: interval
+      days:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+      dayNames:
+        - Sunday
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+        - Saturday
+      intervalMs: 1800000
+steps:
+  - stepNumber: 1
+    name: Map - Map data sources
+    input: No data imported
+    results: 1
+    type: map
+    code: |-
+      //const lastSyncDate = input.memory?.lastModifiedDate
+      const lastSyncDate = "2026-01-01T21:04:07.892Z"
+      const locationId = input.workflowArguments.divisionID
+      //const emailsRecipients = "bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com"
+      const emailsRecipients = "bruno@mindcloud.co"
+      
+      return [{
+          locationId,
+          emailsRecipients,
+          lastSyncDate
+      }]
+  - stepNumber: 2
+    name: Netsuite - Search for Item Fulfillments Originated From Shopify
+    type: action
+    code: |-
+      /** @NApiVersion 2.1 */
+      let output;
+      
+      const PAGE_SIZE = 1000;
+      let bla = "";
+      const MAX_LIMIT = 5000;
+      const SHOPIFY_ORDER_ID_FIELD = 'custbody_shopify_ord_id';
+      const wfArguments = ${JSON.stringify(input?.workflowArguments)}
+      
+      const itemColumns = {
+        fulfillmentId: search.createColumn({ name: 'internalid' }),
+        createdFromId: search.createColumn({ name: 'createdfrom' }),
+        itemname: search.createColumn({ name: 'itemid', join: 'item' }),
+        quantity: search.createColumn({ name: 'quantity' }),
+        item: search.createColumn({ name: 'item' }),
+        displayname: search.createColumn({ name: 'displayname', join: 'item' }),
+        itemunitprice: search.createColumn({ name: 'rate' }),
+        itemquantity: search.createColumn({ name: 'quantity' }),
+        shopifyOrderId: search.createColumn({
+          name: SHOPIFY_ORDER_ID_FIELD,
+          join: 'createdFrom'
+        }),
+      };
+      
+      const packageTrackingColumn = search.createColumn({
+        name: 'trackingnumber',
+        join: 'shipmentPackage'
+      });
+      const packageDescription = search.createColumn({
+        name: "contentsdescription",
+        join: "shipmentPackage",
+        label: "Contents Description"
+      })
+      const itemfulfillmentItemSearchObj = search.create({
+        type: 'itemfulfillment',
+        settings: [{ name: 'consolidationtype', value: 'ACCTTYPE' }],
+        filters: [
+          ['type', 'anyof', 'ItemShip'],
+          'AND',
+          ['mainline', 'is', 'F'],
+          'AND',
+          ['shipping', 'is', 'F'],
+          'AND',
+          ['taxline', 'is', 'F'],
+          'AND',
+          ['createdfrom.custbody_shopify_ord_id', 'isnotempty', ''],
+          'AND',
+          ['csegdivision', 'is', wfArguments.divisionID],
+          'AND',
+          ['custbody_synced_to_shopify', 'is', 'F']
+        ],
+        columns: [
+          itemColumns.fulfillmentId,
+          itemColumns.createdFromId,
+          itemColumns.itemname,
+          itemColumns.quantity,
+          itemColumns.item,
+          itemColumns.displayname,
+          itemColumns.itemunitprice,
+          itemColumns.itemquantity,
+          itemColumns.shopifyOrderId
+        ]
+      });
+      
+      const itemfulfillmentPackageSearchObj = search.create({
+        type: 'itemfulfillment',
+        settings: [{ name: 'consolidationtype', value: 'ACCTTYPE' }],
+        filters: [
+          ['type', 'anyof', 'ItemShip'],
+          'AND',
+          ['mainline', 'is', 'T'],
+          'AND',
+         ['createdfrom.custbody_shopify_ord_id', 'isnotempty', ''],
+          'AND',
+          ['csegdivision', 'is', wfArguments.divisionID],
+          'AND',
+          ['custbody_synced_to_shopify', 'is', 'F']
+        ],
+        columns: [
+          search.createColumn({ name: 'internalid' }),
+          packageTrackingColumn,
+          packageDescription
+        ]
+      });
+      
+      function getOrCreateFulfillment(fulfillmentsById, order, fulfillmentId, createdFromId, shopifyOrderId) {
+        let fulfillment = fulfillmentsById[fulfillmentId];
+      
+        if (!fulfillment) {
+          fulfillment = {
+            data: {
+              id: fulfillmentId,
+              createdfrom: createdFromId || ''
+            },
+            sublists: {
+              item: {},
+              package: {}
+            },
+            shopifyOrderId: shopifyOrderId || ''
+          };
+      
+          fulfillmentsById[fulfillmentId] = fulfillment;
+          order.push(fulfillment);
+        }
+      
+        if (!fulfillment.data.createdfrom && createdFromId) {
+          fulfillment.data.createdfrom = createdFromId;
+        }
+      
+        if (!fulfillment.shopifyOrderId && shopifyOrderId) {
+          fulfillment.shopifyOrderId = shopifyOrderId;
+        }
+      
+        return fulfillment;
+      }
+      
+      try {
+        const fulfillmentsById = {};
+        const fulfillments = [];
+      
+        const pagedItems = itemfulfillmentItemSearchObj.runPaged({ pageSize: PAGE_SIZE });
+        const itemPageRanges = pagedItems.pageRanges;
+      
+        if (itemPageRanges.length > 0) {
+          for (let i = 0; i < itemPageRanges.length; i++) {
+            if (fulfillments.length >= MAX_LIMIT) break;
+      
+            const page = pagedItems.fetch({ index: itemPageRanges[i].index });
+      
+            for (let j = 0; j < page.data.length; j++) {
+              const result = page.data[j];
+              const fulfillmentId = result.getValue(itemColumns.fulfillmentId);
+      
+              if (!fulfillmentId) continue;
+      
+              const fulfillment = getOrCreateFulfillment(
+                fulfillmentsById,
+                fulfillments,
+                fulfillmentId,
+                result.getValue(itemColumns.createdFromId),
+                result.getValue(itemColumns.shopifyOrderId)
+              );
+      
+              const itemIndex = Object.keys(fulfillment.sublists.item).length;
+      
+              fulfillment.sublists.item[itemIndex] = {
+                itemname: result.getValue(itemColumns.itemname) || '',
+                quantity: result.getValue(itemColumns.quantity) || '',
+                item: result.getValue(itemColumns.item) || '',
+                displayname: result.getValue(itemColumns.displayname) || '',
+                itemunitprice: result.getValue(itemColumns.itemunitprice) || '',
+                itemquantity: result.getValue(itemColumns.itemquantity) || ''
+              };
+            }
+          }
+        }
+      
+        const pagedPackages = itemfulfillmentPackageSearchObj.runPaged({ pageSize: PAGE_SIZE });
+        const packagePageRanges = pagedPackages.pageRanges;
+      
+        if (packagePageRanges.length > 0) {
+          for (let i = 0; i < packagePageRanges.length; i++) {
+            const page = pagedPackages.fetch({ index: packagePageRanges[i].index });
+      
+            for (let j = 0; j < page.data.length; j++) {
+              const result = page.data[j];
+              const fulfillmentId = result.getValue({ name: 'internalid' });
+              const trackingNumbersRaw = result.getValue(packageTrackingColumn);
+              const packageDescriptionsRaw = result.getValue(packageDescription);
+              const packageDescriptions = packageDescriptionsRaw
+                .toString()
+                .split(",")
+                .filter(Boolean);
+              bla = "packageDescriptionsRaw" + JSON.stringify(packageDescriptionsRaw)
+      
+              if (!fulfillmentId || !fulfillmentsById[fulfillmentId] || !trackingNumbersRaw) continue;
+      
+              const trackingNumbers = trackingNumbersRaw
+                .toString()
+                .split(",")
+                .filter(Boolean);
+      
+      
+              for (let k = 0; k < trackingNumbers.length; k++) {
+                fulfillmentsById[fulfillmentId].sublists.package[k] = {
+                  packagetrackingnumber: trackingNumbers[k],
+                  packagedescr: packageDescriptions[k]
+                };
+              }
+            }
+          }
+        }
+      
+        output = fulfillments;
+      } catch (e) {
+        output = {
+          errorMessage: e.message,
+          errorName: e.name,
+          errorStack: e.stack
+        };
+      }
+      
+      ;(output);
+  - stepNumber: 3
+    name: Iterate - Loop through NetSuite - Execute Custom Code
+    results: 1
+    type: loop
+    loopTarget:
+      stepNumber: 2
+      name: Netsuite - Search for Item Fulfillments Originated From Shopify
+    children:
+      - stepNumber: 4
+        name: Netsuite - Get Sales Order Memo to see the Shopify Order ID
+        results: 1
+        type: action
+        code: |-
+          /** @NApiVersion 2.1 */
+          var output;
+          
+          try {
+            var salesOrderInternalId = ${JSON.stringify(input.iterateQWTH?.[0].data.createdfrom)};
+          
+            var salesOrderIdColumn = search.createColumn({ name: 'internalid' });
+            var memoColumn = search.createColumn({ name: 'memo' });
+          
+            var salesOrderSearch = search.create({
+              type: 'salesorder',
+              filters: [
+                ['internalid', 'is', salesOrderInternalId]
+              ],
+              columns: [
+                salesOrderIdColumn,
+                memoColumn
+              ]
+            });
+          
+            var searchResults = salesOrderSearch.run().getRange({
+              start: 0,
+              end: 1
+            });
+          
+            output = (searchResults || []).map(function(result) {
+              return {
+                id: result.getValue(salesOrderIdColumn),
+                memo: result.getValue(memoColumn) || ''
+              };
+            });
+          } catch (e) {
+            output = {
+              errorMessage: e.message,
+              errorName: e.name,
+              errorStack: e.stack
+            };
+          }
+          
+          ;(output);
+      - stepNumber: 5
+        name: Map - Extracting the id from the Sales Order
+        input: Step 4
+        results: 1
+        type: map
+        code: |-
+          const so = input.netsuiteGetQuerySearchZUF9[0]
+          
+          return [{
+              variables: {
+                  query: `name:#${so?.memo?.split("#")?.[1]}`,
+                  //query: `name:#67171`
+              },
+          }];
+      - stepNumber: 6
+        name: Shopify - Search for Order
+        results: 1
+        type: action
+        args:
+          - label: Query
+            value: |-
+              query ($query: String!) {
+                orders(first: 1, query: $query) {
+                  edges {
+                    node {
+                      displayFulfillmentStatus
+              
+                      fulfillmentOrders(first: 250) {
+                        edges {
+                          node {
+                            id
+                            status
+              
+                            lineItems(first: 250) {
+                              edges {
+                                node {
+                                  id
+                                  remainingQuantity
+                                  productTitle
+              
+                                  variant {
+                                    sku
+                                  }
+              
+                                  lineItem {
+                                    id
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+              
+                      fulfillments {
+                        fulfillmentLineItems(first: 250) {
+                          edges {
+                            node {
+                              quantity
+              
+                              lineItem {
+                                variant {
+                                  sku
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+          - label: Variables
+            value: "[Step 5: input[0].variables]"
+      - stepNumber: 7
+        name: "Map - Decision Maker: Checks and create the shopify query to fulfill"
+        input: Step 6, Step 3
+        results: 1
+        type: map
+        code: |-
+          // --------------------
+          // Helpers
+          // --------------------
+          const normalizeSku = sku =>
+            (sku || '')
+              .toString()
+              .toUpperCase()
+              .replace(/[^A-Z0-9]/g, '');
+          
+          // --------------------
+          // NetSuite items
+          // --------------------
+          const fulfillmentItemsFromNetsuite = Object.values(
+            input.iterateQWTH?.[0]?.sublists?.item || {}
+          ).map(item => ({
+            sku: normalizeSku(item?.itemname),
+            quantity: Number(item?.quantity || 0),
+            id: item?.item,
+            displayname: item?.displayname,
+            price: Number(item.itemunitprice || 0) * Number(item.itemquantity || 0)
+          }));
+          
+          // --------------------
+          // Shopify order
+          // --------------------
+          const memoryItem = JSON.parse(input.memory?.fulfillmentIdsFromOrdersNotFound || "[]");
+          const shopifyOrder =
+            input.shopifyGraphqlBetaYCOB?.[0];
+          
+          if (!shopifyOrder) {
+            const fulfillId = input.iterateQWTH?.[0]?.data?.id;
+          
+            if (fulfillId) {
+              memoryItem.push(fulfillId);
+            }
+          
+            return [{
+              oderNotFound: true,
+              message: `Shopify Order not found! Netsuite ItemFulfillment ID: ${fulfillId}`,
+              memoryItem,
+            }]
+          }
+          
+          // --------------------
+          // Build partial fulfillment
+          // --------------------
+          const lineItemsByFulfillmentOrder =
+            shopifyOrder.fulfillmentOrders
+              .filter(fo => fo.status !== 'CLOSED')
+              .map(fo => {
+                const fulfillmentOrderLineItems =
+                  fo.lineItems.flatMap(lineItem => {
+                    const shopifySku = normalizeSku(lineItem?.variant?.sku);
+          
+                    const netsuiteIndex =
+                      fulfillmentItemsFromNetsuite.findIndex(nsItem => {
+                        if (
+                          nsItem.shopifyLineItemId &&
+                          nsItem.shopifyLineItemId == lineItem.lineItem.id // Ajuste para comparação segura
+                        ) {
+                          return true;
+                        }
+                        return nsItem.sku && nsItem.sku === shopifySku;
+                      });
+          
+                    console.log(`netsuiteIndex ${netsuiteIndex}`)
+                    if (netsuiteIndex === -1) return [];
+          
+                    const nsItem = fulfillmentItemsFromNetsuite[netsuiteIndex];
+                    console.log(`nsItem ${nsItem}`)
+          
+                    const fulfillQty = Math.min(
+                      nsItem.quantity,
+                      Number(lineItem.remainingQuantity || 0)
+                    );
+                    console.log(`fullfillmentqty ${fulfillQty}`)
+          
+                    if (fulfillQty <= 0) return [];
+          
+                    // consome o item do NetSuite
+                    fulfillmentItemsFromNetsuite.splice(netsuiteIndex, 1);
+          
+                    return [{
+                      id: lineItem.id,
+                      quantity: fulfillQty,
+                    }];
+                  });
+          
+                // --- CORREÇÃO DO BUG ---
+                // Se o array estiver VAZIO (length === 0), retornamos null para ignorar.
+                // Se tiver item (length > 0), deixamos passar.
+                if (fulfillmentOrderLineItems.length === 0) return null;
+          
+                return {
+                  fulfillmentOrderId: fo.id,
+                  fulfillmentOrderLineItems,
+                };
+              })
+              .filter(Boolean); // Limpa os nulls
+          
+          // --------------------
+          // SAFETY CHECK (NOVO)
+          // --------------------
+          // Impede o envio para o Shopify se a lista estiver vazia, evitando o erro "payloads array size..."
+          
+          if (!lineItemsByFulfillmentOrder || lineItemsByFulfillmentOrder.length === 0) {
+              return [{
+                  itShouldStop: true,
+                  message: 'Fulfillments Closed. Skipping Shopify update.',
+                  memoryItem,
+              }];
+          }
+          
+          // --------------------
+          // Tracking
+          // --------------------
+          const packageDescription = input?.iterateQWTH?.[0]?.sublists?.package?.[0]?.packagedescr || "";
+          let company;
+          if (packageDescription.toLowerCase().split(" ").includes("ups")) {
+            company = "UPS"
+          } else if (packageDescription.toLowerCase().split(" ").includes("fedex")) {
+            company = "FedEx"
+          } else if (packageDescription.toLowerCase().split(" ").includes("usps")) {
+            company = "USPS"
+          } else {
+            company = "UPS"
+          }
+          
+          
+          const numbers = Object.values(
+            input?.iterateQWTH?.[0]?.sublists?.package || {}
+          )
+            .map(p => p?.packagetrackingnumber)
+            .filter(Boolean);
+          
+          if (numbers.length === 0) {
+              console.log(`Skipping Order ${shopifyOrder.name}: Tracking number not yet generated in NetSuite.`);
+          
+              return [{
+                  itShouldStop: true, // Ou skipped: true
+                  message: 'Tracking number missing. Waiting for carrier integration to update NetSuite.',
+                  memoryItem,
+              }];
+          }
+          
+          // --------------------
+          // GraphQL mutation
+          // --------------------
+          const query = `
+          mutation ($fulfillment: FulfillmentV2Input!) {
+            fulfillmentCreateV2(fulfillment: $fulfillment) {
+              fulfillment {
+                id
+                status
+                order {
+                  displayFulfillmentStatus
+                }
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+          `;
+          
+          const variables = {
+            fulfillment: {
+              lineItemsByFulfillmentOrder,
+              trackingInfo: {
+                ...(company && { company }),
+                numbers,
+              },
+              notifyCustomer: true,
+            },
+          };
+          
+          return [{ query, variables }];
+      - stepNumber: 8
+        name: If/Else - If Oder Not Found = true
+        results: 1
+        type: conditional
+        condition: "[Step 7: input[0].oderNotFound] = true"
+      - stepNumber: 11
+        name: If/Else - If It Should Stop = true
+        results: 1
+        type: conditional
+        condition: "[Step 7: input[0].itShouldStop] = true"
+      - stepNumber: 14
+        name: "Shopify - GraphQL Beta "
+        results: 1
+        type: action
+        args:
+          - label: Query
+            value: "[Step 7: input[0].query]"
+          - label: Variables
+            value: "[Step 7: input[0].variables]"
+      - stepNumber: 15
+        name: Netsuite - Update as Synced in NetSuite
+        results: 1
+        type: action
+        code: |-
+          const r = record.load({
+              type: 'itemfulfillment',
+              id: '${input?.iterateQWTH?.[0]?.data.id}'
+          });
+          
+          r.setValue({
+              fieldId: 'custbody_synced_to_shopify',
+              value: true
+          });
+          
+          r.save()
+      - stepNumber: 16
+        name: Netsuite - Transform Sales Order into Cash Sale
+        results: 1
+        type: action
+        code: |-
+          /**
+           * @NApiVersion 2.1
+           */
+          let output;
+          
+          try {
+            const salesOrderId = ${ JSON.stringify(input.iterateQWTH?.[0].data.createdfrom) };
+          
+          
+            const cashSaleRec = record.transform({
+              fromType: record.Type.SALES_ORDER,
+              fromId: salesOrderId,
+              toType: record.Type.CASH_SALE,
+              isDynamic: true
+            });
+          
+            const cashSaleId = cashSaleRec.save({
+              enableSourcing: true,
+              ignoreMandatoryFields: false
+            });
+          
+            output = {
+              success: true,
+              skipped: false,
+              salesOrderId: salesOrderId,
+              cashSaleId: cashSaleId
+            };
+          
+          } catch (e) {
+            output = {
+              success: false,
+              errorName: e.name,
+              errorMessage: e.message,
+              errorStack: e.stack
+            };
+          }
+          
+          ; (output);
+  - stepNumber: 9
+    name: Memory - Set Memory
+    results: 2
+    type: memory
+    memory:
+      - key: fulfillmentIdsFromOrdersNotFound
+        savesOn: success
+  - stepNumber: 10
+    name: Flow Control - Continue, emit log
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "[Step 7: input[0].message]"
+  - stepNumber: 12
+    name: Netsuite - Update as Synced in NetSuite
+    results: 1
+    type: action
+  - stepNumber: 13
+    name: Flow Control - Continue, emit log
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "[Step 7: input[0].message]"
+  - stepNumber: 17
+    name: Map - Check fulfillmentIdsFromOrdersNotFound emptyness
+    input: No data imported
+    results: 1
+    type: map
+    code: |-
+      const fulfillmentIdsFromOrdersNotFound = JSON.parse(input.memory?.fulfillmentIdsFromOrdersNotFound || "[]")
+      
+      return [{ shouldLog: fulfillmentIdsFromOrdersNotFound.length > 0 }]
+  - stepNumber: 18
+    name: If/Else - If Should Log = true
+    results: 1
+    type: conditional
+    condition: "[Step 17: input[0].shouldLog] = true"
+  - stepNumber: 19
+    name: Flow Control - Send email
+    type: action
+    args:
+      - label: Action
+        value: doNothing
+      - label: Log Type
+        value: info
+      - label: Send Email
+        value: Yes
+      - label: Email To
+        value: "[Step 1: input[0].emailsRecipients]"
+      - label: Email Subject
+        value: Update Shipments Workflow - Shopify Orders not found
+      - label: Email Body
+        value: Hello Team,
+  - stepNumber: 20
+    name: Memory - Set Memory
+    type: memory
+    memory:
+      - key: fulfillmentIdsFromOrdersNotFound
+        savesOn: success

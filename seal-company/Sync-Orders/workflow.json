@@ -1,0 +1,252 @@
+{
+  "steps": [
+    {
+      "code": "// Get the webhook data array\nconst webhookData = input.webhookB2WT;\n\n// Access the body from the first webhook event\nconst body = webhookData?.[0]?.body;\n\n// Extract inserted orders, defaulting to empty array if not found\nconst insertedOrders = body?.Inserted[0] || [];\n\n// Return the inserted orders as-is (OrderNbr, Date, LineTotal, OpportunityID)\nreturn insertedOrders;",
+      "name": "Map - Extract Inserted Orders",
+      "type": "map",
+      "input": "1kHcTj8xB2WT",
+      "results": 1,
+      "stepNumber": 1
+    },
+    {
+      "name": "If/Else - Has Opportunity ID?",
+      "type": "conditional",
+      "results": 1,
+      "condition": "[Step 1: input[0].OpportunityID] nempty null",
+      "stepNumber": 2
+    },
+    {
+      "code": "const payload = input.mapVGHC[0];\n\n// Build the HubSpot search filter payload to find deals\n// matching the current order's OpportunityID\nreturn [\n  {\n    filters: [\n      {\n        propertyName: \"acumatica_opportunity_id\",\n        operator: \"EQ\",\n        value: String(payload?.OpportunityID)\n      }\n    ]\n  }\n];",
+      "name": "Map - Build Search Filter Payload",
+      "type": "map",
+      "input": "Step 1",
+      "results": 1,
+      "stepNumber": 3
+    },
+    {
+      "args": [
+        {
+          "label": "Filter Groups",
+          "value": "[Step 3: input]"
+        }
+      ],
+      "name": "Hubspot App - Search HubSpot Deal by Opportunity ID",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 4
+    },
+    {
+      "name": "If/Else - Deal Found?",
+      "type": "conditional",
+      "condition": "[Step 4: input[0].id] nempty null",
+      "stepNumber": 5
+    },
+    {
+      "code": "const payload = input.mapVGHC[0];\nconst searchResult = input.hubspotAppSearchDealsJI6S[0];\n\nconst dealId = searchResult?.id;\n\n// Convert datetime string to epoch milliseconds (midnight UTC)\nfunction toEpochMs(dateStr) {\n  if (!dateStr) return null;\n  const d = new Date(dateStr);\n  if (isNaN(d.getTime())) return null;\n  const normalized = new Date(d.toISOString().split('T')[0] + 'T00:00:00.000Z');\n  return normalized.getTime();\n}\n\nconst properties = {\n  order_number: payload?.OrderNbr != null ? String(payload.OrderNbr) : null,\n  order_date: toEpochMs(payload?.Date),\n  order_total: payload?.LineTotal != null ? String(payload.LineTotal) : null,\n  order_created: \"Yes\",\n  dealstage: \"closedwon\"\n};\n\nreturn [{\n  dealId,\n  properties\n}];",
+      "name": "Map - Build Update Properties (Opportunity-Linked)",
+      "type": "map",
+      "input": "Step 4, Step 1",
+      "results": 1,
+      "stepNumber": 6
+    },
+    {
+      "args": [
+        {
+          "label": "Deal Id",
+          "value": "[Step 6: input[0].dealId]"
+        }
+      ],
+      "name": "Hubspot App - Update Deal - Order Fields (Opportunity-Linked)",
+      "type": "action",
+      "stepNumber": 7
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "doNothing"
+        },
+        {
+          "label": "Emit Log",
+          "value": "true"
+        },
+        {
+          "label": "Log Type",
+          "value": "error"
+        },
+        {
+          "label": "Log Message",
+          "value": "ERROR: No HubSpot deal found matching Acumatica Opportunity ID: "
+        },
+        {
+          "label": "Send Email",
+          "value": "true"
+        },
+        {
+          "label": "Email To",
+          "value": "tim.nix@example.com, implementation@mindcloud.com"
+        },
+        {
+          "label": "Email Subject",
+          "value": "ERROR: No HubSpot Deal Found for Acumatica Opportunity ID: "
+        },
+        {
+          "label": "Email Body",
+          "value": "ERROR: No HubSpot deal found matching Acumatica Opportunity ID: "
+        }
+      ],
+      "name": "Flow Control - Log Error - Deal Not Found for Opportunity",
+      "type": "action",
+      "stepNumber": 8
+    },
+    {
+      "code": "const order = input.mapVGHC[0];\n\n// Filter to search HubSpot companies by Acumatica Customer ID\nconst companyFilters = [{\n  filters :[\n    {\n      propertyName: \"acumatica_customer_id\",\n      operator: \"EQ\",\n      value: String(order?.Customer ?? \"\").trim()\n    },\n    {\n      propertyName: \"acumatica_location_id\",\n      operator: \"EQ\",\n      value: \"MAIN\"\n    }\n  ]\n}]\n\n// Filter to search HubSpot contacts by Acumatica Contact ID\nconst contactFilters = [{\n  filters: [\n    {\n      propertyName: \"acumatica_contact_id\",\n      operator: \"EQ\",\n      value: String(order?.Contact ?? \"\").trim()\n    }\n  ]\n}];\n\nreturn [{ companyFilters, contactFilters }];",
+      "name": "Map - Build Company & Contact Search Filters",
+      "type": "map",
+      "input": "Step 1",
+      "results": 1,
+      "stepNumber": 9
+    },
+    {
+      "args": [
+        {
+          "label": "Filter Groups",
+          "value": "[Step 9: input[0].companyFilters]"
+        }
+      ],
+      "name": "Hubspot App - Search HubSpot Company by Customer ID",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 10
+    },
+    {
+      "args": [
+        {
+          "label": "Filter Groups",
+          "value": "[Step 9: input[0].contactFilters]"
+        }
+      ],
+      "name": "Hubspot App - Search HubSpot Contact by Contact ID",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 11
+    },
+    {
+      "args": [
+        {
+          "label": "Filter Groups",
+          "value": "[{"
+        }
+      ],
+      "name": "Hubspot App - Search for existing direct order (No Opportunity)",
+      "type": "action",
+      "stepNumber": 12
+    },
+    {
+      "name": "If/Else - If Id Is Not Empty",
+      "type": "conditional",
+      "results": 1,
+      "condition": "[Step 12: input[0].id] nempty null",
+      "stepNumber": 13
+    },
+    {
+      "args": [
+        {
+          "label": "Deal Id",
+          "value": "[Step 12: input[0].id]"
+        }
+      ],
+      "name": "Hubspot App - Update Deal - Direct Order (No Opportunity)",
+      "type": "action",
+      "results": 1,
+      "properties": "{ \"amount\": \"",
+      "stepNumber": 14
+    },
+    {
+      "args": [
+        {
+          "label": "Properties.dealname",
+          "value": "Direct Order - "
+        },
+        {
+          "label": "Properties.dealstage",
+          "value": "closedwon"
+        },
+        {
+          "label": "Properties.origin type",
+          "value": "Direct Order"
+        },
+        {
+          "label": "Properties.amount",
+          "value": "[Step 1: input[0].LineTotal]"
+        },
+        {
+          "label": "Associations[0].to.id",
+          "value": "[Step 11: input[0].id]"
+        },
+        {
+          "label": "Associations[0].types[0].association Category",
+          "value": "HUBSPOT_DEFINED"
+        },
+        {
+          "label": "Associations[0].types[0].association Type Id",
+          "value": "3"
+        },
+        {
+          "label": "Associations[1].types[0].association Category",
+          "value": "HUBSPOT_DEFINED"
+        },
+        {
+          "label": "Associations[1].types[0].association Type Id",
+          "value": "341"
+        },
+        {
+          "label": "Associations[1].to.id",
+          "value": "[Step 10: input[0].id]"
+        },
+        {
+          "label": "Properties.pipeline",
+          "value": "default"
+        }
+      ],
+      "name": "Hubspot App - Create Deal - Direct Order (No Opportunity)",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 15
+    },
+    {
+      "code": "// Convert datetime string to epoch milliseconds (midnight UTC)\nfunction toEpochMs(dateStr) {\n  if (!dateStr) return null;\n  const d = new Date(dateStr);\n  if (isNaN(d.getTime())) return null;\n  const normalized = new Date(d.toISOString().split('T')[0] + 'T00:00:00.000Z');\n  return normalized.getTime();\n}\n\n// Acumatica Owner ID -> HubSpot Owner ID\nconst acumaticaOwnerToHubspot = {\n  '127053': '7321575',       // TIMOTHY NIX\n  '116638': '26951785',      // Walter Martinez\n  '130063': '80596682',      // Ashley Nelson\n  '130077': '80771250',      // Tara Cabaniss\n  '130078': '80771273',      // Tamara Wood\n  '127386': '185671876',     // Britt Cabral\n  '129187': '204240096',     // Larry Woods\n  '125541': '205658988',     // Jolene Ramos\n  '116616': '215835954',     // Jim Whorton\n  '116628': '273828897',     // Robert Lee\n  '128351': '601051234',     // Luke Starry\n  '127535': '690603772',     // Peggy Cole\n  '129520': '928040643',     // Jeff Patterson\n  '116631': '1116181631',    // Ryan Sperry\n  '129089': '1215258143',    // Jeff Price\n  '116629': '1502551068',    // Rachel Motte\n  '125930': '1716729933',    // Tyler Garza\n  '116609': '1772285574',    // Chris Barger\n  '116612': '1919764494',    // Greg Lohse\n  '116606': '1964590240',    // David Oldham\n  '129262': '2086206935',    // Chris Hebert\n};\n\nconst order = input.mapVGHC?.[0];\nconst createdDeal = input.hubspotAppCreateDealWGRY?.[0];\nconst updatedDeal = input.hubspotAppUpdateDealByIdGJBY?.[0];\n\nconst dealId = createdDeal?.id || updatedDeal?.id;\n\nconst acumaticaOwnerId = String(order?.Owner ?? \"\").trim();\nconst hubspotOwnerId = acumaticaOwnerToHubspot[acumaticaOwnerId] || null;\n\nconst properties = {\n  order_number: order?.OrderNbr != null ? String(order.OrderNbr) : null,\n  order_date: toEpochMs(order?.Date),\n  order_total: order?.LineTotal != null ? String(order.LineTotal) : null,\n  order_created: \"Yes\",\n  origin_type: \"Direct Order\",\n  hubspot_owner_id: hubspotOwnerId\n};\n\nreturn [{ dealId, properties }];",
+      "name": "Map - Build Update Properties (Direct Order)",
+      "type": "map",
+      "input": "Step 15, Step 1, Step 14",
+      "results": 1,
+      "stepNumber": 16
+    },
+    {
+      "args": [
+        {
+          "label": "Deal Id",
+          "value": "[Step 16: input[0].dealId]"
+        }
+      ],
+      "name": "Hubspot App - Update Direct Order Deal - Custom Fields",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 17
+    }
+  ],
+  "triggers": [
+    {
+      "name": "Webhook - Webhook",
+      "type": "webhook",
+      "message": "Webhook"
+    }
+  ],
+  "workflow": {
+    "id": "fRkZbu49XTjo",
+    "name": "Acumatica to HubSpot - Sync Orders",
+    "version": "0.0.7",
+    "isActive": false,
+    "publishedOn": "2026-06-02T22:08:34.000Z"
+  }
+}

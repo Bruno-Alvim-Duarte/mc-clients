@@ -1,0 +1,654 @@
+workflow:
+  name: Acumatica to HubSpot - Sync Opportunities
+  id: 5JqM7GgcCZ79
+  version: 0.0.23
+  isActive: false
+  publishedOn: 2026-05-27T22:04:41.000Z
+triggers:
+  - name: Webhook - Acumatica Opportunity Webhook
+    type: webhook
+    message: Acumatica Opportunity Webhook
+steps:
+  - stepNumber: 1
+    name: Map - Extract Opportunity Fields from Webhook
+    input: IWoMk9HLY6sI
+    results: 1
+    type: map
+    code: |-
+      const webhookData = input.webhookY6SI;
+
+      // Extract the inserted data from the webhook body
+      const insertedData = webhookData?.[0]?.body?.Inserted?.[0];
+
+      // Return an array with all fields from the inserted data
+      return [{
+        OpportunityID: insertedData?.OpportunityID?.trim(),
+        BusinessAccount: insertedData?.BusinessAccount?.trim(),
+        Contact: insertedData?.Contact,
+        Owner: insertedData?.Owner,
+        Stage: insertedData?.Stage,
+        DetailTotal: insertedData?.DetailTotal,
+        EstimatedCloseDate: insertedData?.EstimatedCloseDate,
+        DateCreated: insertedData?.DateCreated,
+        LastModifiedDate: insertedData?.LastModifiedDate,
+        CROpportunity_noteID: insertedData?.CROpportunity_noteID,
+        Description: insertedData?.Description,
+        Owner_description: insertedData?.Owner_2
+      }];
+  - stepNumber: 2
+    name: "If/Else - Check: Is This a Deletion? (No Inserted Data)"
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].OpportunityID] empty null"
+  - stepNumber: 3
+    name: "Flow Control - End Workflow: Deletion Event — Skip Processing"
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Skipping workflow: Acumatica opportunity was deleted (no Ins..."
+  - stepNumber: 4
+    name: "Map - Detect Loop: Check if Only USRHSDEALID Changed"
+    input: IWoMk9HLY6sI
+    results: 1
+    type: map
+    code: |-
+      const webhookData = input.webhookY6SI;
+
+      const body = webhookData?.[0]?.body;
+      const inserted = body?.Inserted?.[0];
+      const deleted = body?.Deleted?.[0];
+
+      // If there's no Deleted record, it's a new creation — not a loop
+      if (!deleted || !inserted) {
+        return [{ isLoopEcho: false }];
+      }
+
+      // Fields to ignore when comparing (these change on any update)
+      const ignoreFields = [
+        'LastModifiedDate',
+        'LastModified',
+        'LastActivity',
+        'CompletedAt',
+        'CreatedAt',
+        'Timestamp',
+        'tstamp',
+        'NoteID',
+        'UsrHSDealID'
+      ];
+
+      // Normalize: remove ignored fields and HSDEALID from attributes
+      function normalize(record) {
+        const clone = JSON.parse(JSON.stringify(record));
+        
+        // Remove top-level ignored fields (case-insensitive)
+        for (const key of Object.keys(clone)) {
+          if (ignoreFields.some(f => key.toLowerCase().includes(f.toLowerCase()))) {
+            delete clone[key];
+          }
+        }
+        
+        return clone;
+      }
+
+      const normalizedInserted = normalize(inserted);
+      const normalizedDeleted = normalize(deleted);
+
+      const isLoopEcho = JSON.stringify(normalizedInserted) === JSON.stringify(normalizedDeleted);
+
+      return [{ isLoopEcho }];
+  - stepNumber: 5
+    name: "If/Else - Check: Is This a Loop Echo?"
+    results: 1
+    type: conditional
+    condition: "[Step 4: input[0].isLoopEcho] = true"
+  - stepNumber: 6
+    name: "Flow Control - End Workflow: Loop Echo Detected (HSDEALID Only Change)"
+    type: action
+    args:
+      - label: Action
+        value: endAsSuccess
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Loop echo detected: Only HSDEALID changed. Skipping to prevent infinite loop."
+  - stepNumber: 7
+    name: "Map - Build Filter: Match Deal by Opportunity ID"
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const data = input.mapFZGQ;
+      const record = data?.[0];
+
+      const value = record?.OpportunityID || '';
+
+      return [{
+          filters: [{
+            propertyName: 'acumatica_opportunity_id',
+            operator: 'EQ',
+            value: String(value)
+          }]
+      }];
+  - stepNumber: 8
+    name: Hubspot App - Search HubSpot Deals by Acumatica Opportunity ID
+    type: action
+    args:
+      - label: Filter Groups[0].filters[0].property Name
+        value: acumatica_opportunity_id
+      - label: Filter Groups[0].filters[0].operator
+        value: EQ
+      - label: Filter Groups[0].filters[0].value
+        value: "[Step 1: input[0].OpportunityID]"
+      - label: Filter Groups
+        value: "[Step 7: input]"
+      - label: Properties
+        value: dealstage, hubspot_owner_id, acumatica_opportunity_id
+  - stepNumber: 9
+    name: Acumatica - Search Acumatica Opportunity for UsrHubSpotDealID
+    results: 1
+    type: action
+    args:
+      - label: Entity
+        value: Opportunity
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Filter
+        value: OpportunityID eq '
+  - stepNumber: 10
+    name: "If/Else - Check: Did Step 3 Find a Deal by Opportunity ID?"
+    results: 1
+    type: conditional
+    condition: "[Step 8: input[0].id] nempty null"
+  - stepNumber: 11
+    name: Map - Extract HSDEALID from Acumatica Attributes
+    input: Step 9
+    results: 1
+    type: map
+    code: |-
+      const opportunity = input.acumaticaSearchByEntity8HN0[0];
+      return { hubspotDealId: opportunity.UsrHSDealID?.value || null };
+  - stepNumber: 12
+    name: If/Else - If Hubspot Deal Id Is Not Empty
+    results: 1
+    type: conditional
+    condition: "[Step 11: input[0].hubspotDealId] nempty null"
+  - stepNumber: 13
+    name: "Map - Build Filter: Match Deal by HSDEALID"
+    input: Step 11
+    results: 1
+    type: map
+    code: |-
+      const data = input.mapSQZF;
+      const hubspotDealId = data?.[0]?.hubspotDealId || '';
+
+      return [{
+          filters: [{
+            propertyName: 'hs_object_id',
+            operator: 'EQ',
+            value: String(hubspotDealId)
+          }]
+      }];
+  - stepNumber: 14
+    name: Hubspot App - Search HubSpot Deals by HSDEALID (Fallback)
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups
+        value: "[Step 13: input]"
+  - stepNumber: 15
+    name: "If/Else - Check: Did Fallback Find a Deal by HSDEALID?"
+    type: conditional
+    condition: "[Step 14: input[0].id] nempty null"
+  - stepNumber: 16
+    name: "Flow Control - End Workflow: No Deal Found in HubSpot"
+    type: action
+    args:
+      - label: Action
+        value: endAsFailure
+      - label: Emit Log
+        value: "true"
+      - label: Log Type
+        value: error
+      - label: Log Message
+        value: No HubSpot deal found for Acumatica Opportunity. Searched by...
+      - label: Send Email
+        value: "true"
+      - label: Email To
+        value: bruno@mindcloud.co,tnix@sealcompany.com
+      - label: Email Subject
+        value: Sync Opportunities Workflow Error
+      - label: Email Body
+        value: No HubSpot deal found for Acumatica Opportunity. Searched by...
+  - stepNumber: 17
+    name: "Map - Build Filter: Match Company by Business Account & MAIN Location"
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const data = input.mapFZGQ;
+      const record = data?.[0];
+
+      const value = record?.BusinessAccount || '';
+
+      return [{
+        filters: [{
+          propertyName: 'acumatica_customer_id',
+          operator: 'EQ',
+          value: String(value)
+        }, {
+          propertyName: 'acumatica_location_id',
+          operator: 'EQ',
+          value: 'MAIN'
+        }]
+      }];
+  - stepNumber: 18
+    name: Hubspot App - Search HubSpot Companies by Acumatica Customer ID
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups[0].filters[0].property Name
+        value: acumatica_customer_id
+      - label: Filter Groups[0].filters[0].value
+        value: "[Step 1: input[0].BusinessAccount]"
+      - label: Filter Groups
+        value: "[Step 17: input]"
+  - stepNumber: 19
+    name: "If/Else - Check: Does Opportunity Have a Contact?"
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].Contact] nempty null"
+  - stepNumber: 20
+    name: "Map - Build Filter: Match Contact by Acumatica Contact ID"
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const data = input.mapFZGQ;
+      const record = data?.[0];
+
+      const value = record?.Contact || '';
+
+      return [{
+          filters: [{
+            propertyName: 'acumatica_contact_id',
+            operator: 'EQ',
+            value: String(value)
+          }]
+      }];
+  - stepNumber: 21
+    name: Hubspot App - Search HubSpot Contacts by Acumatica Contact ID
+    results: 1
+    type: action
+    args:
+      - label: Filter Groups[0].filters[0].property Name
+        value: acumatica_contact_id
+      - label: Filter Groups[0].filters[0].value
+        value: "[Step 1: input[0].Contact]"
+      - label: Filter Groups
+        value: "[Step 20: input]"
+  - stepNumber: 22
+    name: "If/Else - Check: Does Deal Already Exist in HubSpot?"
+    results: 1
+    type: conditional
+    condition: "[Step 8: input[0].id] nempty null OR [Step 14: input[0].id] nempty null"
+  - stepNumber: 23
+    name: Map - Map Acumatica Fields to HubSpot Deal Update Properties
+    input: Step 1, Step 8, Step 14
+    results: 1
+    type: map
+    code: |-
+      const acumaticaData = input.mapFZGQ;
+      const record = acumaticaData?.[0];
+      const hubspotDeal = input.hubspotAppSearchDealsIPOY.length > 0 ? input.hubspotAppSearchDealsIPOY : input.hubspotAppSearchDealsMFIT;
+      const hubspotRecord = hubspotDeal?.[0];
+
+      // Helper function to safely escape double quotes in string values
+      function safeString(val) {
+        if (val === null || val === undefined) return '';
+        return String(val).replace(/\"/g, '\\"');
+      }
+
+      // Stage ranking for comparison (ascending order, using Acumatica display names)
+      const stageRank = {
+        'Prospect': 1,
+        'Development': 2,
+        'Expired': 3,
+        'Won': 4,
+        'Lost': 5
+      };
+
+      // Build a case-insensitive stage rank lookup
+      const stageRankNormalized = {};
+      for (const [k, v] of Object.entries(stageRank)) {
+        stageRankNormalized[k.trim().toUpperCase()] = v;
+      }
+
+      // Acumatica stage name to HubSpot internal stage value mapping
+      const stageToHubSpot = {
+        'Prospect': '1306157229',
+        'Development': '1306157230',
+        'Expired': '1306157231',
+        'Won': 'closedwon',
+        'Lost': 'closedlost'
+      };
+
+      // Build a case-insensitive stage-to-HubSpot lookup
+      const stageToHubSpotNormalized = {};
+      for (const [k, v] of Object.entries(stageToHubSpot)) {
+        stageToHubSpotNormalized[k.trim().toUpperCase()] = v;
+      }
+
+      // Reverse mapping: HubSpot internal stage value to Acumatica stage name (for rank comparison)
+      const hubSpotStageToName = {
+        '1306157229': 'Prospect',
+        '1306157230': 'Development',
+        '1306157231': 'Expired',
+        'closedwon': 'Won',
+        'closedlost': 'Lost'
+      };
+
+      // Owner mapping: Acumatica owner name to HubSpot internal owner ID
+      const ownerToHubSpot = {
+        'TIMOTHY NIX': '7321575',
+        'Walter Martinez': '26951785',
+        'Ashley Nelson': '80596682',
+        'Tara Cabaniss': '80771250',
+        'Tamara Wood': '80771273',
+        'Britt Cabral': '185671876',
+        'Larry Woods': '204240096',
+        'Jolene Ramos': '205658988',
+        'Jim Whorton': '215835954',
+        'Robert Lee': '273828897',
+        'Luke Starry': '601051234',
+        'Peggy Cole': '690603772',
+        'Jeff Patterson': '928040643',
+        'Ryan Sperry': '1116181631',
+        'Jeff Price': '1215258143',
+        'Rachel Motte': '1502551068',
+        'Tyler Garza': '1716729933',
+        'Chris Barger': '1772285574',
+        'Greg Lohse': '1919764494',
+        'David Oldham': '1964590240',
+        'Chris Hebert': '2086206935'
+      };
+
+      // Build a case-insensitive owner lookup from the mapping
+      const ownerToHubSpotNormalized = {};
+      for (const [k, v] of Object.entries(ownerToHubSpot)) {
+        ownerToHubSpotNormalized[k.trim().toUpperCase()] = v;
+      }
+
+      // Convert datetime string to epoch milliseconds (Long)
+      // Returns null for missing or invalid dates so the field can be omitted
+      function toISO(dateStr) {
+        if (!dateStr) return null;
+        const d = new Date(dateStr);
+        return d.toISOString().split('T')[0] + 'T12:00:00.000Z';
+      }
+
+      // Determine if we should update the deal stage
+      function shouldUpdateStage(acumaticaStage, hubspotStageValue, hubspotOwnerId) {
+        // If HubSpot deal has an owner assigned, protect against downgrades
+        if (hubspotOwnerId && String(hubspotOwnerId).trim() !== '') {
+          const normalizedAcuStage = acumaticaStage.trim().toUpperCase();
+          const acumaticaRank = stageRankNormalized[normalizedAcuStage] || 0;
+          // Convert HubSpot internal value back to name for rank comparison
+          // If HubSpot stage is unrecognized (custom stage, different pipeline, etc.),
+          // default to 999 to conservatively block the update and protect the deal
+          const hubspotStageName = hubSpotStageToName[hubspotStageValue] || '';
+          const hubspotRank = stageRank[hubspotStageName] || 999;
+          // Only update if Acumatica stage rank is strictly greater
+          return acumaticaRank > hubspotRank;
+        }
+        // No owner assigned - always allow stage update (existing behavior)
+        return true;
+      }
+
+      const acumaticaStage = record?.Stage || '';
+      const currentHubspotStage = hubspotRecord?.properties?.dealstage || '';
+      const hubspotOwnerId = hubspotRecord?.properties?.hubspot_owner_id || '';
+
+      // Map owner name to HubSpot internal ID (case-insensitive, trimmed)
+      const acumaticaOwner = record?.Owner_description || '';
+      const normalizedOwner = acumaticaOwner.trim().toUpperCase();
+      const mappedOwner = ownerToHubSpotNormalized[normalizedOwner] || '';
+
+      // Map stage name to HubSpot internal value (case-insensitive, trimmed)
+      const normalizedStage = acumaticaStage.trim().toUpperCase();
+      const mappedStage = stageToHubSpotNormalized[normalizedStage] || '';
+
+      const properties = {
+        amount: record?.DetailTotal || '',
+        dealname: safeString(record?.Description),
+        hubspot_owner_id: mappedOwner,
+        acumatica_opportunity_id: record?.OpportunityID || ''
+      };
+
+      // Only include date fields if they have valid values
+      const closedate = toISO(record?.EstimatedCloseDate);
+      if (closedate !== null) {
+        properties.closedate = closedate;
+      }
+
+      const createdate = toISO(record?.DateCreated);
+      if (createdate !== null) {
+        properties.createdate = createdate;
+      }
+
+      // Only include dealstage if we have a valid mapped stage and the update is allowed
+      if (mappedStage && shouldUpdateStage(acumaticaStage, currentHubspotStage, hubspotOwnerId)) {
+        properties.dealstage = mappedStage;
+      }
+
+      return [{ properties }];
+  - stepNumber: 24
+    name: Map - Resolve HubSpot Deal ID (Primary or Fallback)
+    input: Step 8, Step 14
+    results: 1
+    type: map
+    code: |-
+      const step3 = input.hubspotAppSearchDealsIPOY; // Step 3 - Search HubSpot Deals by Acumatica Opportunity ID
+      const step8 = input.hubspotAppSearchDealsMFIT; // Step 8 - Search HubSpot Deals by HSDEALID (Fallback)
+
+      const dealId = step3?.[0]?.id || step8?.[0]?.id || '';
+
+      return [{ dealId }];
+  - stepNumber: 25
+    name: Hubspot App - Update Existing HubSpot Deal
+    results: 1
+    type: action
+    args:
+      - label: Deal Id
+        value: "[Step 24: input[0].dealId]"
+  - stepNumber: 26
+    name: Hubspot App - Associate Updated Deal → Company
+    results: 2
+    type: action
+    args:
+      - label: From Object Type
+        value: Deals
+      - label: To Object Type
+        value: Companies
+      - label: Inputs[0].to.id
+        value: "[Step 18: input[0].id]"
+      - label: Inputs[0].type
+        value: "341"
+      - label: Inputs[0].from.id
+        value: "[Step 24: input[0].dealId]"
+  - stepNumber: 27
+    name: Hubspot App - Associate Updated Deal → Contact
+    results: 2
+    type: action
+    args:
+      - label: From Object Type
+        value: Deals
+      - label: To Object Type
+        value: Contacts
+      - label: Inputs[0].to.id
+        value: "[Step 21: input[0].id]"
+      - label: Inputs[0].from.id
+        value: "[Step 24: input[0].dealId]"
+      - label: Inputs[0].type
+        value: "3"
+  - stepNumber: 28
+    name: Map - Map Acumatica Fields to HubSpot Deal Create Properties
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const acumaticaData = input.mapFZGQ;
+      const record = acumaticaData?.[0];
+
+      // Helper function to safely escape double quotes in string values
+      function safeString(val) {
+        if (val === null || val === undefined) return '';
+        return String(val).replace(/\"/g, '\\"');
+      }
+
+      // Acumatica stage name to HubSpot internal stage value mapping
+      const stageToHubSpot = {
+        'Prospect': '1306157229',
+        'Development': '1306157230',
+        'Expired': '1306157231',
+        'Won': 'closedwon',
+        'Lost': 'closedlost'
+      };
+
+      // Build a case-insensitive stage-to-HubSpot lookup
+      const stageToHubSpotNormalized = {};
+      for (const [k, v] of Object.entries(stageToHubSpot)) {
+        stageToHubSpotNormalized[k.trim().toUpperCase()] = v;
+      }
+
+      // Owner mapping: Acumatica owner name to HubSpot internal owner ID
+      const ownerToHubSpot = {
+        'TIMOTHY NIX': '7321575',
+        'Walter Martinez': '26951785',
+        'Ashley Nelson': '80596682',
+        'Tara Cabaniss': '80771250',
+        'Tamara Wood': '80771273',
+        'Britt Cabral': '185671876',
+        'Larry Woods': '204240096',
+        'Jolene Ramos': '205658988',
+        'Jim Whorton': '215835954',
+        'Robert Lee': '273828897',
+        'Luke Starry': '601051234',
+        'Peggy Cole': '690603772',
+        'Jeff Patterson': '928040643',
+        'Ryan Sperry': '1116181631',
+        'Jeff Price': '1215258143',
+        'Rachel Motte': '1502551068',
+        'Tyler Garza': '1716729933',
+        'Chris Barger': '1772285574',
+        'Greg Lohse': '1919764494',
+        'David Oldham': '1964590240',
+        'Chris Hebert': '2086206935'
+      };
+
+      // Build a case-insensitive owner lookup from the mapping
+      const ownerToHubSpotNormalized = {};
+      for (const [k, v] of Object.entries(ownerToHubSpot)) {
+        ownerToHubSpotNormalized[k.trim().toUpperCase()] = v;
+      }
+
+      // Convert datetime string to epoch milliseconds (Long)
+      // Returns null for missing or invalid dates so the field can be omitted
+      function toISO(dateStr) {
+        if (!dateStr) return null;
+        const d = new Date(dateStr);
+        return d.toISOString().split('T')[0] + 'T12:00:00.000Z';
+      }
+
+      const acumaticaStage = record?.Stage || '';
+      const acumaticaOwner = record?.Owner_description || '';
+
+      // Map owner name to HubSpot internal ID (case-insensitive, trimmed)
+      const normalizedOwner = acumaticaOwner.trim().toUpperCase();
+      const mappedOwner = ownerToHubSpotNormalized[normalizedOwner] || '';
+
+      // Map stage name to HubSpot internal value (case-insensitive, trimmed)
+      const normalizedStage = acumaticaStage.trim().toUpperCase();
+      const mappedStage = stageToHubSpotNormalized[normalizedStage] || '';
+
+      const properties = {
+        amount: record?.DetailTotal || '',
+        dealname: safeString(record?.Description),
+        hubspot_owner_id: mappedOwner,
+        acumatica_opportunity_id: record?.OpportunityID || ''
+      };
+
+      // Only include date fields if they have valid values
+      const closedate = toISO(record?.EstimatedCloseDate);
+      if (closedate !== null) {
+        properties.closedate = closedate;
+      }
+
+      const createdate = toISO(record?.DateCreated);
+      if (createdate !== null) {
+        properties.createdate = createdate;
+      }
+
+      // Only include dealstage if we have a valid mapped stage
+      if (mappedStage) {
+        properties.dealstage = mappedStage;
+      }
+
+      properties.pipeline = "default";
+
+      return [{ properties }];
+  - stepNumber: 29
+    name: Map - Build Deal Associations
+    input: Step 21, Step 18
+    results: 1
+    type: map
+    code: |-
+      const companyId = input.hubspotAppSearchCompaniesVFAI?.[0]?.id || '';
+      const contactId = input.hubspotAppSearchContactsO6W7?.[0]?.id || '';
+
+      const associations = [];
+
+      // Always add Company association if available
+      if (companyId) {
+        associations.push({
+          to: { id: companyId },
+          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: '341' }]
+        });
+      }
+
+      // Only add Contact association if Contact was found
+      if (contactId) {
+        associations.push({
+          to: { id: contactId },
+          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: '3' }]
+        });
+      }
+
+      return [{ associations }];
+  - stepNumber: 30
+    name: Hubspot App - Create New HubSpot Deal with Company & Contact Associations
+    results: 1
+    type: action
+    args:
+      - label: Associations
+        value: "[Step 29: input[0].associations[]]"
+  - stepNumber: 31
+    name: Acumatica - Create/Update Opportunity
+    results: 1
+    type: action
+    args:
+      - label: Endpoint Version
+        value: 1.0.0
+      - label: Web Service Endpoint
+        value: MindCloudIntegration
+      - label: Opportunity I D.value
+        value: "[Step 1: input[0].OpportunityID]"

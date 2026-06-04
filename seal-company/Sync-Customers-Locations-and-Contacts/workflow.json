@@ -1,0 +1,332 @@
+{
+  "steps": [
+    {
+      "name": "Map - Build Acumatica Date Filter",
+      "type": "map",
+      "input": "ErRukEcIAiti",
+      "stepNumber": 1
+    },
+    {
+      "name": "Acumatica - Fetch Acumatica Customers",
+      "type": "action",
+      "children": [
+        {
+          "name": "Map - Count Customers to Sync",
+          "type": "map",
+          "input": "Step 2",
+          "stepNumber": 3
+        },
+        {
+          "name": "If/Else - If: No Customers to Sync?",
+          "type": "conditional",
+          "condition": "[Step 3: input[0].data[0].customerCount] = 0",
+          "stepNumber": 4
+        },
+        {
+          "name": "Flow Control - LOG: Sync started",
+          "type": "action",
+          "stepNumber": 6
+        },
+        {
+          "name": "Iterate - Loop: Each Customer",
+          "type": "loop",
+          "children": [
+            {
+              "name": "Function - Search for Companies Matches",
+              "type": "action",
+              "stepNumber": 8
+            },
+            {
+              "name": "If/Else - If: Company Match is Ambiguous?",
+              "type": "conditional",
+              "condition": "[Step 8: input[0].status] = ambiguous_match",
+              "stepNumber": 9
+            },
+            {
+              "name": "Map - Build Customer Summary",
+              "type": "map",
+              "input": "Step 7, Step 8, Step 13, Step 14, Step 25, Step 35, Step 36, Step 40",
+              "stepNumber": 44
+            },
+            {
+              "name": "Flow Control - LOG: Customer Summary",
+              "type": "action",
+              "stepNumber": 45
+            },
+            {
+              "name": "Flow Control - LOG: Sync Completed",
+              "type": "action",
+              "stepNumber": 46
+            },
+            {
+              "name": "If/Else - If Customer Count < 50",
+              "type": "conditional",
+              "condition": "[Step 3: input[0].customerCount] < 50",
+              "stepNumber": 47
+            }
+          ],
+          "loopTarget": {
+            "name": "Acumatica - Fetch Acumatica Customers",
+            "stepNumber": 2
+          },
+          "stepNumber": 7
+        }
+      ],
+      "pagination": {
+        "page": "0",
+        "pageSize": 50
+      },
+      "stepNumber": 2
+    },
+    {
+      "name": "Flow Control - LOG: Nothing to Sync — Exit Early",
+      "type": "action",
+      "stepNumber": 5
+    },
+    {
+      "name": "Flow Control - ALERT: Ambiguous Company Match — Email + Skip",
+      "type": "action",
+      "stepNumber": 10
+    },
+    {
+      "name": "If/Else - If: HubSpot Company Found?",
+      "type": "conditional",
+      "condition": "[Step 8: input[0].status] = matched_by_id OR [Step 8: input[0].status] = matched_by_confidence",
+      "stepNumber": 11
+    },
+    {
+      "name": "Map - Escape & Build Parent Company Properties",
+      "type": "map",
+      "input": "Step 7, Step 8",
+      "stepNumber": 12
+    },
+    {
+      "name": "Hubspot App - THEN: Update Existing Parent Company",
+      "type": "action",
+      "stepNumber": 13
+    },
+    {
+      "name": "Acumatica - GET CustomerLocation from current Customer",
+      "type": "action",
+      "pagination": {
+        "page": "0",
+        "pageSize": 250
+      },
+      "stepNumber": 14
+    },
+    {
+      "name": "Iterate - Loop: Each Location",
+      "type": "loop",
+      "children": [
+        {
+          "name": "Function - Acumatica Location → HubSpot Child Company Search & Match",
+          "type": "action",
+          "stepNumber": 16
+        },
+        {
+          "name": "If/Else - If: Child Company Match is Ambiguous?",
+          "type": "conditional",
+          "condition": "[Step 16: input[0].status] = ambiguous_match",
+          "stepNumber": 17
+        }
+      ],
+      "loopTarget": {
+        "name": "Acumatica - GET CustomerLocation from current Customer",
+        "stepNumber": 14
+      },
+      "stepNumber": 15
+    },
+    {
+      "name": "Flow Control - ALERT: Ambiguous Child Match — Email + Skip",
+      "type": "action",
+      "stepNumber": 18
+    },
+    {
+      "name": "If/Else - If: Hubspot Child Company Found?",
+      "type": "conditional",
+      "condition": "[Step 16: input[0].status] = matched_by_id OR [Step 16: input[0].status] = matched_by_confidence",
+      "stepNumber": 19
+    },
+    {
+      "name": "Map - Escape & Build Child Company Properties",
+      "type": "map",
+      "input": "Step 7, Step 8, Step 15, Step 16",
+      "stepNumber": 20
+    },
+    {
+      "name": "Hubspot App - Update Name and Address",
+      "type": "action",
+      "stepNumber": 21
+    },
+    {
+      "name": "Hubspot App - Create Association Child Company - Company",
+      "type": "action",
+      "stepNumber": 22
+    },
+    {
+      "name": "If/Else - If isn't MAIN Location",
+      "type": "conditional",
+      "condition": "[Step 15: input[0].locationID.value] ne MAIN",
+      "stepNumber": 23
+    },
+    {
+      "name": "Hubspot App - Create Child Company",
+      "type": "action",
+      "stepNumber": 24
+    },
+    {
+      "name": "Acumatica - GET Contacts from Customer",
+      "type": "action",
+      "stepNumber": 25
+    },
+    {
+      "name": "Iterate - Loop: Each Contact",
+      "type": "loop",
+      "children": [
+        {
+          "name": "Function - Acumatica Contact → HubSpot Contact Search & Match",
+          "type": "action",
+          "stepNumber": 27
+        },
+        {
+          "name": "Map - Map Contact: Name, Phone & Mobile Logic",
+          "type": "map",
+          "input": "Step 26",
+          "stepNumber": 28
+        },
+        {
+          "name": "If/Else - If: Contact Match is Ambiguous?",
+          "type": "conditional",
+          "condition": "[Step 27: input[0].status] = ambiguous_match",
+          "stepNumber": 29
+        }
+      ],
+      "loopTarget": {
+        "name": "Acumatica - GET Contacts from Customer",
+        "stepNumber": 25
+      },
+      "stepNumber": 26
+    },
+    {
+      "name": "Flow Control - ALERT: Ambiguous Contact Match — Email + Skip",
+      "type": "action",
+      "stepNumber": 30
+    },
+    {
+      "name": "If/Else - If: Contact Matched by ID?",
+      "type": "conditional",
+      "condition": "[Step 27: input[0].status] = matched_by_id OR [Step 27: input[0].status] = matched_by_confidence",
+      "stepNumber": 31
+    },
+    {
+      "name": "Hubspot App - Update Contact by ID",
+      "type": "action",
+      "stepNumber": 32
+    },
+    {
+      "name": "Hubspot App - Create Association Contact - Company",
+      "type": "action",
+      "stepNumber": 33
+    },
+    {
+      "name": "Hubspot App - Create Contact",
+      "type": "action",
+      "stepNumber": 34
+    },
+    {
+      "name": "Hubspot App - Create Parent Company",
+      "type": "action",
+      "stepNumber": 35
+    },
+    {
+      "name": "Acumatica - GET CustomerLocation from current Customer",
+      "type": "action",
+      "stepNumber": 36
+    },
+    {
+      "name": "Iterate - Loop: Each Location",
+      "type": "loop",
+      "children": [
+        {
+          "name": "If/Else - If Value != MAIN",
+          "type": "conditional",
+          "condition": "[Step 37: input[0].locationID.value] ne MAIN",
+          "stepNumber": 38
+        }
+      ],
+      "loopTarget": {
+        "name": "Acumatica - GET CustomerLocation from current Customer",
+        "stepNumber": 36
+      },
+      "stepNumber": 37
+    },
+    {
+      "name": "Hubspot App - Create Child Company",
+      "type": "action",
+      "stepNumber": 39
+    },
+    {
+      "name": "Acumatica - GET Contacts from current Customer",
+      "type": "action",
+      "stepNumber": 40
+    },
+    {
+      "name": "Map - Map Contact: Name, Phone & Mobile Logic",
+      "type": "map",
+      "input": "Step 40",
+      "stepNumber": 41
+    },
+    {
+      "name": "Iterate - Loop: Each Contact",
+      "type": "loop",
+      "children": [
+        {
+          "name": "Hubspot App - Create Contact",
+          "type": "action",
+          "stepNumber": 43
+        }
+      ],
+      "loopTarget": {
+        "name": "Map - Map Contact: Name, Phone & Mobile Logic",
+        "stepNumber": 41
+      },
+      "stepNumber": 42
+    },
+    {
+      "name": "Memory - Set Memory: LastSyncedDate",
+      "type": "memory",
+      "stepNumber": 48
+    }
+  ],
+  "triggers": [
+    {
+      "name": "Schedule - Run daily, only on weekdays",
+      "type": "schedule",
+      "schedule": {
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "mode": "interval",
+        "dayNames": [
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday"
+        ],
+        "intervalMs": 86400000
+      }
+    }
+  ],
+  "workflow": {
+    "id": "D19fDl2itAOT",
+    "name": "Acumatica to HubSpot - Sync Customers, Locations and Contacts",
+    "version": "draft",
+    "isActive": false,
+    "publishedOn": "2026-06-03T15:13:28.000Z"
+  }
+}
