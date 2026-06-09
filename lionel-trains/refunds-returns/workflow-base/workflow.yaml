@@ -1,0 +1,287 @@
+workflow:
+  id: d9eUirm1KqF4
+  name: "(PROTEAM) Shopify to NetSuite - Create Return Authorization"
+  version: 0.0.8
+  isActive: true
+  publishedOn: "2026-03-27T13:01:38.000Z"
+
+triggers:
+  - name: Schedule - Run every 15 minutes, daily
+    type: schedule
+    message: Run every 15 minutes, daily
+    schedule:
+      mode: interval
+      intervalMs: 900000
+      days:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+      dayNames:
+        - Sunday
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+        - Saturday
+
+steps:
+  - stepNumber: 1
+    name: Shopify - Get Orders
+    type: action
+    results: 1
+    args:
+      - label: Updated At Min
+        value: "[system: oneHourAgo]"
+      - label: Financial Status
+        value: "refunded, partially_refunded"
+    pagination:
+      type: all
+      pageSize: 250
+
+  - stepNumber: 2
+    name: Shopify - Get Order By Id
+    type: action
+    results: 1
+    args:
+      - label: Order Id
+        value: "6563175858258"
+
+  - stepNumber: 3
+    name: Iterate - Loop through Shopify - Get Orders
+    type: loop
+    loopTarget:
+      name: Shopify - Get Orders
+      stepNumber: 1
+    children:
+      - stepNumber: 4
+        name: Map - Map order number
+        type: map
+        input: Step 3
+        results: 1
+        code: |
+          const a = input['iterate3A4G'];
+          const b = input['system'];
+
+          const name = a[0].name || a[0].number;
+
+          return name;
+
+      - stepNumber: 5
+        name: Netsuite - Find Matched Sales order
+        type: action
+        results: 1
+
+      - stepNumber: 6
+        name: If/Else - If Id Is Not Empty
+        type: conditional
+        results: 1
+        condition: "[Step 5: input[0].id] nempty null"
+
+  - stepNumber: 7
+    name: Shopify - Get Refund by Order Id
+    type: action
+    results: 1
+    args:
+      - label: Order Id
+        value: "[Step 3: input[0].id]"
+
+  - stepNumber: 8
+    name: If/Else - If Refund Id (Order Adjustments) Is Empty
+    type: conditional
+    results: 1
+    condition: "[Step 7: input[0].orderAdjustments[0].refundId] empty null"
+
+  - stepNumber: 9
+    name: Flow Control - Continue, emit log
+    type: action
+    args:
+      - label: Action
+        value: continue
+      - label: Emit Log
+        value: "Yes"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "No Order Adjustments were made yet for this Refund - Order "
+
+  - stepNumber: 10
+    name: "Map - Prepare Taxes, Discounts, Etc..."
+    type: map
+    input: "Step 3, Step 5, Step 7"
+    results: 1
+    code: |
+      const a = input['iterate3A4G'];
+      const b = input['shopifyGetRefunds4EEC'];
+      const c = input['netsuiteGetQuerySearchA2MM'];
+      const d = input['system'];
+
+      const lines = c[0]?.sublists?.item
+
+      let giftCardLine = null;
+
+      // for (const key in lines) {
+      //     if (lines[key].item == 2911) { // or the item ID you are looking for
+      //         giftCardLine = lines[key];
+      //         break; // stop once found
+      //     }
+      // }
+
+      const giftCardAmount = giftCardLine ? giftCardLine?.amount : "0";
+
+      const price = b.reduce((sum, item) => {
+        const amountStr = item?.node?.fulfillmentLineItem?.lineItem?.originalUnitPriceSet?.presentmentMoney?.amount;
+        const amount = parseFloat(amountStr || '0');
+        return sum + amount;
+      }, 0);
+
+      const returnReason = b[0].node?.returnReason
+      const currentTotalDiscounts = Number(a[0].currentTotalDiscounts) || 0
+      let restock
+      if (price >= 100) {
+       restock = 1 // YES - Plan to Receive
+      } else if (price < 100 && returnReason === 'DEFECTIVE'){
+      restock = 4 // NO – Damaged
+      } else {
+          restock = 2 //NO - Destroy in Field
+      }
+
+      let returnType = returnReason === 'DEFECTIVE' ? 1 : 4 // 4 is negotiate return and 1 is damage
+
+
+      if (c[0].fields?.department === '24' || c[0].fields?.department === '26' || c[0].fields?.department === '103'  ) {
+          restock = 2 // always NO - Destroy in Field
+          returnType = 4 // always negotiate return
+      } // if department is meta (24), tiktok (26) or flip (103)
+
+      let discountAmount = Number(c[0].fields?.discounttotal) || 0
+
+      let promotionAmount 
+      for (const [key, value] of Object.entries(c[0].sublists?.item)) {
+        if (value.custcolPtrItemName === "ECOM Promotion") {
+          promotionAmount = Number(value.amount)
+        }
+      }
+
+      discountAmount = discountAmount + promotionAmount
+      let totalTax = a[0].currentTotalTax || 0
+
+      const totalPrice = a[0].totalLineItemsPrice
+
+      const totalReturn = b.reduce((sum, itemB) => {
+        const sku = itemB.node?.fulfillmentLineItem?.lineItem?.sku;
+        const qty = Number(itemB.node?.quantity) || 0;
+        const matchA = a[0].lineItems.find(itemA => itemA.sku === sku);
+        const price = matchA ? Number(matchA.price) : 0;
+        return sum + (price * qty);
+      }, 0);
+
+      let partialDiscount = discountAmount *totalReturn / totalPrice
+      //let partialTax = (totalTax *totalReturn / totalPrice).toFixed(2)
+      //let partialTax = Number(totalReturn * a[0]?.taxLines[0]?.rate).toFixed(2)
+      let partialTax = (Math.ceil(Number(totalReturn * a[0]?.taxLines[0]?.rate) * 100) / 100).toFixed(2) || 0;
+
+      const qty = b[0].node?.quantity
+
+      return {price, restock, returnReason, returnType, discountAmount, promotionAmount, partialDiscount, qty, totalReturn, totalTax, partialTax, giftCardAmount};
+
+
+  - stepNumber: 11
+    name: Map - Filter Matched Items
+    type: map
+    input: "Step 3, Step 5"
+    results: 1
+    code: |
+      const shopifyOrder = input['iterate3A4G'][0]; 
+      const netsuiteOrder = input['netsuiteGetQuerySearchA2MM'][0];
+
+      function compareItems(shopifyItems, netsuiteItemsObj) {
+
+        const netsuiteItems = Object.values(netsuiteItemsObj);
+
+        const normalizedShopify = shopifyItems.map(i => ({
+          sku: (i.sku || "").trim().toUpperCase(),
+          shopifyId: i.id,
+          quantity: Number(i.quantity || 0)
+        }));
+
+        const normalizedNetsuite = netsuiteItems
+          .filter(n => n.itemDisplay)
+          .map(n => ({
+            raw: n.itemDisplay,
+            sku: n.itemDisplay.trim().toUpperCase(),
+            netsuiteId: n.item,
+            quantity: Number(n.quantity || 0)
+          }));
+
+        const result = {
+          shopifyNotInNetsuite: [],
+          netsuiteNotInShopify: [],
+          matched: [] 
+        };
+
+        // Shopify → NetSuite
+        normalizedShopify.forEach(sItem => {
+
+          const match = normalizedNetsuite.find(ns => ns.sku === sItem.sku);
+
+          if (!match) {
+            result.shopifyNotInNetsuite.push(sItem.sku);
+          } else {
+            result.matched.push({
+              sku: sItem.sku,
+              shopifyId: sItem.shopifyId,
+              netsuiteId: match.netsuiteId,
+              shopifyQty: sItem.quantity,
+              netsuiteQty: match.quantity
+            });
+          }
+
+        });
+
+        // NetSuite → Shopify
+        normalizedNetsuite.forEach(ns => {
+          const found = normalizedShopify.some(s => s.sku === ns.sku);
+          if (!found) result.netsuiteNotInShopify.push(ns.raw);
+        });
+
+        return result;
+      }
+
+      return compareItems(
+        shopifyOrder.lineItems, 
+        netsuiteOrder.sublists.item
+      );
+
+  - stepNumber: 12
+    name: If/Else - If Shopify Not In Netsuite[] Is Empty
+    type: conditional
+    results: 1
+    condition: "[Step 11: input[0].shopifyNotInNetsuite[]] empty null"
+
+  - stepNumber: 13
+    name: Flow Control - Emit log
+    type: action
+    args:
+      - label: Action
+        value: doNothing
+      - label: Emit Log
+        value: "Yes"
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "Items Missing in Netsuite were Ignored - "
+
+  - stepNumber: 14
+    name: Map - Map data sources
+    type: map
+    input: No data imported
+
+  - stepNumber: 15
+    name: Netsuite - Create Return Authorization
+    type: action
+    results: 1

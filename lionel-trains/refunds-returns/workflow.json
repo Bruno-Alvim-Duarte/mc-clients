@@ -1,0 +1,198 @@
+{
+  "workflow": {
+    "name": "Shopify to NetSuite - Refunds/Returns",
+    "version": "0.1.0",
+    "isActive": false,
+    "description": "Detect Shopify refunded/partially_refunded orders, create a NetSuite Return Authorization for refunded items only, prevent duplicate RMAs, and notify Lionel by email."
+  },
+  "triggers": [
+    {
+      "name": "Schedule - Run every 15 minutes, daily",
+      "type": "schedule",
+      "message": "Run every 15 minutes, daily",
+      "schedule": {
+        "days": [0, 1, 2, 3, 4, 5, 6],
+        "mode": "interval",
+        "dayNames": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+        "intervalMs": 900000
+      }
+    }
+  ],
+  "steps": [
+    {
+      "stepNumber": 1,
+      "name": "Shopify - Get Refunded Orders",
+      "type": "action",
+      "results": "many",
+      "args": [
+        {
+          "label": "Updated At Min",
+          "value": "[system: oneHourAgo]"
+        },
+        {
+          "label": "Financial Status",
+          "value": "refunded, partially_refunded"
+        }
+      ],
+      "pagination": {
+        "type": "all",
+        "pageSize": 250
+      }
+    },
+    {
+      "stepNumber": 2,
+      "name": "Iterate - Loop through Shopify Orders",
+      "type": "loop",
+      "loopTarget": {
+        "name": "Shopify - Get Refunded Orders",
+        "stepNumber": 1
+      },
+      "children": [
+        {
+          "stepNumber": 3,
+          "name": "Map - Shopify Order Identifiers",
+          "type": "map",
+          "input": "Step 2",
+          "results": 1,
+          "code": "const order = input['iterateShopifyOrders'][0];\n\nconst orderName = order.name || String(order.number || order.orderNumber || '');\nconst orderId = String(order.id || '');\n\nreturn {\n  shopifyOrderId: orderId,\n  shopifyOrderName: orderName,\n  netsuiteShopifyOrderValue: orderName,\n  salesOrderMemo: `Shopify Order ${orderName}`\n};"
+        },
+        {
+          "stepNumber": 4,
+          "name": "NetSuite - Find Matching Sales Order",
+          "type": "action",
+          "results": 1,
+          "args": [
+            {
+              "label": "Record Type",
+              "value": "salesorder"
+            },
+            {
+              "label": "Mainline",
+              "value": "T"
+            },
+            {
+              "label": "Field",
+              "value": "custbody_shopify_ord_id"
+            },
+            {
+              "label": "Value",
+              "value": "[Step 3: input[0].netsuiteShopifyOrderValue]"
+            }
+          ],
+          "code": "const orderInfo = input['mapShopifyOrderIdentifiers'][0];\nconst shopifyOrderValue = String(orderInfo?.netsuiteShopifyOrderValue || '').trim();\n\nif (!shopifyOrderValue) {\n  return [];\n}\n\nconst salesOrderSearch = search.create({\n  type: search.Type.SALES_ORDER,\n  filters: [\n    ['mainline', 'is', 'T'],\n    'AND',\n    ['custbody_shopify_ord_id', 'is', shopifyOrderValue]\n  ],\n  columns: [\n    search.createColumn({ name: 'internalid' }),\n    search.createColumn({ name: 'tranid' }),\n    search.createColumn({ name: 'entity' }),\n    search.createColumn({ name: 'memo' }),\n    search.createColumn({ name: 'custbody_shopify_ord_id' })\n  ]\n});\n\nconst matches = [];\n\nsalesOrderSearch.run().each(result => {\n  const salesOrderId = result.getValue({ name: 'internalid' });\n  const salesOrderRec = record.load({\n    type: record.Type.SALES_ORDER,\n    id: salesOrderId,\n    isDynamic: false\n  });\n\n  const itemLines = {};\n  const lineCount = salesOrderRec.getLineCount({ sublistId: 'item' });\n\n  for (let line = 0; line < lineCount; line++) {\n    const lineKey = `line${line + 1}`;\n    itemLines[lineKey] = {\n      item: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line }),\n      itemDisplay: salesOrderRec.getSublistText({ sublistId: 'item', fieldId: 'item', line }),\n      quantity: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line }),\n      rate: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'rate', line }),\n      amount: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'amount', line })\n    };\n  }\n\n  matches.push({\n    id: String(salesOrderId),\n    type: 'salesord',\n    fields: {\n      id: String(salesOrderId),\n      tranid: result.getValue({ name: 'tranid' }),\n      entity: result.getValue({ name: 'entity' }),\n      memo: result.getValue({ name: 'memo' }),\n      custbody_shopify_ord_id: result.getValue({ name: 'custbody_shopify_ord_id' })\n    },\n    sublists: {\n      item: itemLines\n    }\n  });\n\n  return false;\n});\n\nreturn matches;"
+        },
+        {
+          "stepNumber": 5,
+          "name": "If/Else - Sales Order Found",
+          "type": "conditional",
+          "results": 1,
+          "condition": "[Step 4: input[0].id] nempty null"
+        },
+        {
+          "stepNumber": 6,
+          "name": "Shopify - Get Refunds by Order Id",
+          "type": "action",
+          "results": "many",
+          "args": [
+            {
+              "label": "Order Id",
+              "value": "[Step 3: input[0].shopifyOrderId]"
+            }
+          ]
+        },
+        {
+          "stepNumber": 7,
+          "name": "Map - Refund Requests",
+          "type": "map",
+          "input": "Step 3, Step 4, Step 6",
+          "results": "many",
+          "code": "const orderInfo = input['mapShopifyOrderIdentifiers'][0];\nconst refunds = input['shopifyGetRefundsByOrderId'] || [];\n\nreturn refunds\n  .map(refund => {\n    const refundId = String(refund.id || '');\n    const items = (refund.refundLineItems || [])\n      .filter(line => Number(line.quantity || 0) > 0)\n      .map(line => ({\n        lineItemId: String(line.lineItemId || line.lineItem?.id || ''),\n        sku: String(line.lineItem?.sku || '').trim().toUpperCase(),\n        name: line.lineItem?.name || '',\n        quantity: Number(line.quantity || 0),\n        subtotal: Number(line.subtotal || 0)\n      }))\n      .filter(line => line.sku && line.quantity > 0);\n\n    return {\n      refundId,\n      shopifyOrderId: orderInfo.shopifyOrderId,\n      shopifyOrderName: orderInfo.shopifyOrderName,\n      externalId: `lionel-shopify-rma-${orderInfo.shopifyOrderId}-${refundId}`,\n      items\n    };\n  })\n  .filter(refund => refund.refundId && refund.items.length > 0);"
+        },
+        {
+          "stepNumber": 8,
+          "name": "Iterate - Loop through Refund Requests",
+          "type": "loop",
+          "loopTarget": {
+            "name": "Map - Refund Requests",
+            "stepNumber": 7
+          },
+          "children": [
+            {
+              "stepNumber": 9,
+              "name": "NetSuite - Find Existing RMA",
+              "type": "action",
+              "results": 1,
+              "args": [
+                {
+                  "label": "Record Type",
+                  "value": "returnauthorization"
+                },
+                {
+                  "label": "External Id",
+                  "value": "[Step 8: input[0].externalId]"
+                }
+              ]
+            },
+            {
+              "stepNumber": 10,
+              "name": "If/Else - No Existing RMA",
+              "type": "conditional",
+              "results": 1,
+              "condition": "[Step 9: input[0].id] empty null"
+            },
+            {
+              "stepNumber": 11,
+              "name": "Map - Match Refunded Items to Sales Order Lines",
+              "type": "map",
+              "input": "Step 4, Step 8",
+              "results": 1,
+              "code": "const salesOrder = input['netsuiteFindMatchingSalesOrder'][0];\nconst refund = input['iterateRefundRequests'][0];\nconst nsLines = Object.values(salesOrder?.sublists?.item || {});\n\nconst matched = [];\nconst missing = [];\n\nfor (const refundItem of refund.items) {\n  const nsLine = nsLines.find(line => String(line.itemDisplay || '').trim().toUpperCase() === refundItem.sku);\n\n  if (!nsLine) {\n    missing.push(refundItem);\n    continue;\n  }\n\n  matched.push({\n    sku: refundItem.sku,\n    itemName: refundItem.name,\n    netsuiteItemId: nsLine.item,\n    quantity: refundItem.quantity,\n    subtotal: refundItem.subtotal\n  });\n}\n\nreturn {\n  refundId: refund.refundId,\n  externalId: refund.externalId,\n  shopifyOrderId: refund.shopifyOrderId,\n  shopifyOrderName: refund.shopifyOrderName,\n  matched,\n  missing,\n  hasMatchedItems: matched.length > 0\n};"
+            },
+            {
+              "stepNumber": 12,
+              "name": "If/Else - Has Matched Refund Items",
+              "type": "conditional",
+              "results": 1,
+              "condition": "[Step 11: input[0].hasMatchedItems] eq true"
+            },
+            {
+              "stepNumber": 13,
+              "name": "NetSuite - Create Return Authorization",
+              "type": "action",
+              "results": 1,
+              "code": "const salesOrder = input.netsuiteFindMatchingSalesOrder[0];\nconst rmaData = input.mapMatchRefundedItemsToSalesOrderLines[0];\n\nconst returnAuthRec = record.transform({\n  fromType: 'salesorder',\n  fromId: salesOrder.id,\n  toType: 'returnauthorization',\n  isDynamic: true\n});\n\nreturnAuthRec.setValue({ fieldId: 'externalid', value: rmaData.externalId });\nreturnAuthRec.setValue({ fieldId: 'custbody_shopify_ord_id', value: rmaData.shopifyOrderName });\nreturnAuthRec.setValue({ fieldId: 'memo', value: `Shopify Order ${rmaData.shopifyOrderName}` });\nreturnAuthRec.setValue({ fieldId: 'otherrefnum', value: rmaData.shopifyOrderName });\n\nconst matchedItems = rmaData.matched || [];\nlet hasValidLine = false;\nconst lineCount = returnAuthRec.getLineCount({ sublistId: 'item' });\n\nfor (let i = 0; i < lineCount; i++) {\n  const itemId = returnAuthRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i });\n  const match = matchedItems.find(item => Number(item.netsuiteItemId) === Number(itemId));\n\n  returnAuthRec.selectLine({ sublistId: 'item', line: i });\n\n  if (match && Number(match.quantity) > 0) {\n    returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: Number(match.quantity) });\n    hasValidLine = true;\n  } else {\n    returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: 0 });\n  }\n\n  returnAuthRec.commitLine({ sublistId: 'item' });\n}\n\nif (!hasValidLine) {\n  throw new Error(`No valid refunded item lines were found for Shopify order ${rmaData.shopifyOrderName}.`);\n}\n\nconst returnAuthId = returnAuthRec.save();\nreturn { id: returnAuthId, externalId: rmaData.externalId };"
+            },
+            {
+              "stepNumber": 14,
+              "name": "Map - RMA Notification",
+              "type": "map",
+              "input": "Step 11, Step 13",
+              "results": 1,
+              "code": "const rmaData = input['mapMatchRefundedItemsToSalesOrderLines'][0];\nconst rma = input['netsuiteCreateReturnAuthorization'][0];\nconst accountId = input.system?.netsuiteAccountId || '{{NETSUITE_ACCOUNT_ID}}';\nconst rmaUrl = `https://${accountId}.app.netsuite.com/app/accounting/transactions/rtnauth.nl?id=${rma.id}`;\n\nreturn {\n  to: 'jjones@lionel.com, AMiller@lionel.com',\n  subject: `NetSuite RMA created for Shopify order ${rmaData.shopifyOrderName}`,\n  body: `A NetSuite RMA has been created for Shopify order ${rmaData.shopifyOrderName}.\\n\\nRMA ID: ${rma.id}\\nRMA Link: ${rmaUrl}\\nShopify Order ID: ${rmaData.shopifyOrderId}\\nShopify Refund ID: ${rmaData.refundId}`,\n  rmaUrl\n};"
+            },
+            {
+              "stepNumber": 15,
+              "name": "Email - Send RMA Created Notification",
+              "type": "action",
+              "results": 1,
+              "args": [
+                {
+                  "label": "To",
+                  "value": "[Step 14: input[0].to]"
+                },
+                {
+                  "label": "Subject",
+                  "value": "[Step 14: input[0].subject]"
+                },
+                {
+                  "label": "Body",
+                  "value": "[Step 14: input[0].body]"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

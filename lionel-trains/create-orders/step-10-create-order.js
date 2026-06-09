@@ -13,9 +13,13 @@ function execute() {
     const NETSUITE_CSEG_DIVISION = wfArguments.divisionID;
     const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
     const NETSUITE_LOCATION_ID = wfArguments.locationID;
+    const NETSUITE_CONCORD_LOCATION_ID = NETSUITE_LOCATION_ID;
+    const NETSUITE_AMAZON_LOCATION_ID = 152;
     const DEFAULT_CURRENCY_ID = 1;
+    const AMAZON_FBM_DELIVERY_DATE_FIELD_ID = 'custbody_amz_fbm_del_date';
+    const SHIP_COMPLETE_FIELD_ID = 'shipcomplete';
     const SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES = {
-      'gid://shopify/Location/72788476094': 152
+      'gid://shopify/Location/72788476094': NETSUITE_AMAZON_LOCATION_ID
     };
 
     // -----------------------------
@@ -185,6 +189,20 @@ function execute() {
       return '4';
     }
 
+    function orderHasOpenLineFromNetsuiteLocation(lineItems, fulfillmentOrderLineLocationMap, locationId) {
+      const openLineItems = lineItems.filter(function (lineItem) {
+        return getLineQuantities(lineItem).pendingQuantity > 0;
+      });
+
+      if (!locationId || !openLineItems.length) {
+        return false;
+      }
+
+      return openLineItems.some(function (lineItem) {
+        return Number(getLineLocationId(lineItem, fulfillmentOrderLineLocationMap)) === Number(locationId);
+      });
+    }
+
     function parseShopifyDateToNetSuiteDate(value) {
       if (!value) return null;
 
@@ -195,6 +213,27 @@ function execute() {
       }
 
       return date;
+    }
+
+    function subtractUtcDays(date, days) {
+      if (!date) return null;
+
+      const adjustedDate = new Date(date.getTime());
+      adjustedDate.setUTCDate(adjustedDate.getUTCDate() - days);
+      adjustedDate.setUTCHours(12, 0, 0, 0);
+
+      return adjustedDate;
+    }
+
+    function getAmazonLatestDeliveryDate(order) {
+      const amazonLatestDeliveryDateAttribute = (order?.customAttributes || []).find(function (attribute) {
+        return attribute?.key === 'Amazon Latest Delivery Date';
+      });
+
+      return subtractUtcDays(
+        parseShopifyDateToNetSuiteDate(amazonLatestDeliveryDateAttribute?.value),
+        1
+      );
     }
 
     function getAmount(value) {
@@ -544,7 +583,11 @@ function execute() {
     const itemMap = buildItemMap(matchedItemsResult);
     const fulfillmentOrderLineLocationMap = buildFulfillmentOrderLineLocationMap(order);
     const shopifyOrderClass = getShopifyOrderClassWithFulfillmentLocations(order, fulfillmentOrderLineLocationMap);
+    const originatedFromAmazon = getShopifyOrderClass(order) === '1';
     const isAmazonFbmOrder = shopifyOrderClass === '1';
+    const hasConcordFulfillmentLine = orderHasOpenLineFromNetsuiteLocation(lineItems, fulfillmentOrderLineLocationMap, NETSUITE_CONCORD_LOCATION_ID);
+    const shouldSetAmazonFbmHeaderFields = originatedFromAmazon && hasConcordFulfillmentLine;
+    const amazonFbmDeliveryDate = shouldSetAmazonFbmHeaderFields ? getAmazonLatestDeliveryDate(order) : null;
     const shopifyCreatedAt = order?.createdAt;
     const transactionDate = parseShopifyDateToNetSuiteDate(shopifyCreatedAt);
 
@@ -662,6 +705,20 @@ function execute() {
       fieldId: 'custbody_shopify_ord_class',
       value: shopifyOrderClass
     });
+
+    if (shouldSetAmazonFbmHeaderFields) {
+      salesOrderRec.setValue({
+        fieldId: SHIP_COMPLETE_FIELD_ID,
+        value: true
+      });
+
+      if (amazonFbmDeliveryDate) {
+        salesOrderRec.setValue({
+          fieldId: AMAZON_FBM_DELIVERY_DATE_FIELD_ID,
+          value: amazonFbmDeliveryDate
+        });
+      }
+    }
     
     //
     // salesOrderRec.setValue({
@@ -763,7 +820,11 @@ function execute() {
       discountAmount: discountAmount,
       discountLineAdded: discountLineAdded,
       shippingAmount,
-      isAmazonFbmOrder: isAmazonFbmOrder
+      originatedFromAmazon: originatedFromAmazon,
+      isAmazonFbmOrder: isAmazonFbmOrder,
+      hasConcordFulfillmentLine: hasConcordFulfillmentLine,
+      shouldSetAmazonFbmHeaderFields: shouldSetAmazonFbmHeaderFields,
+      amazonFbmDeliveryDate: amazonFbmDeliveryDate
     };
 
   } catch (error) {
