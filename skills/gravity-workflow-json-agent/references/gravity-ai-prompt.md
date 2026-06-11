@@ -49,16 +49,23 @@ Variable-reference rules:
 - Do not leave placeholders such as `{record id}`, `{error}`, or `{timestamp}`.
 - If a placeholder like `{{CONFIRM_EMAIL_RECIPIENTS}}` remains, do not guess the value. Leave it visible and report it as a required confirmation.
 
-Logging and failure behavior:
-- Configure Step Completion Option / Flow Control for app steps when the JSON specifies logging or failure behavior.
-- For app-step failures inside loops, prefer `Continue Loop` only when the failed record can be safely skipped.
-- For critical app-step failures outside loops, prefer `Stop Workflow`.
+Flow Control, logging, and failure email rules:
+- Add Step Completion Option / Flow Control configuration to app steps, not to native Gravity steps by default.
+- App steps include NetSuite search/create/update/delete/SuiteScript steps, Shopify GraphQL/REST/order/fulfillment/customer steps, Acumatica create/update/query/delete steps, HubSpot/Salesforce/FTP connector steps, and any other connector step that reads from or writes to an external system.
+- Native Gravity steps such as `map`, `conditional`, `loop`, `set memory`, and helper flow-control steps usually should not receive app-step completion logging/email configuration. They may still prepare values used by logs and emails.
+- On each app step that can fail, configure `Step Completion Option` as `Flow Control` when available.
+- Configure `When this step fails` based on risk: use `Stop Workflow` when continuing could corrupt data, create duplicates, hide a systemic issue, or make later steps unsafe; use `Continue Loop` when the workflow is inside a loop and the failure is specific to the current record; use `Go to Next Step` only when the next step is intentionally designed to handle the missing or failed result; use `Break Loop` only when the current loop should stop but later workflow steps may still run.
+- For record-level app failures inside loops, use `Continue Loop`, `Log level = Error`, enable failure email when human action is needed, and make the email body say the current record was skipped.
+- For critical app failures outside loops, use `Stop Workflow`, `Log level = Error`, enable failure email when human action is needed, and make the email body say the workflow was stopped.
 - Use `Error` logs for failures requiring attention, `Warning` logs for recoverable unexpected states, and `Info` logs for successful milestones.
 - Start app-specific log messages with the app name in brackets, for example `[NetSuite]`, `[Shopify]`, `[Acumatica]`, or `[HubSpot]`.
 - Do not include step numbers in log messages.
-- Enable success logs for create, update, delete, and other material external-system mutations when specified or when safe to do so.
-- Failure email subjects must include the real workflow name as plain text and must not contain placeholders.
-- Failure email bodies should include the step name, app, workflow name, error message reference, and record identifiers available from earlier steps.
+- Enable success logs for create, update, delete, and other material external-system mutations. Success logs should include the action performed, source identifier, target record ID when available, and enough context to reconcile the run later.
+- Failure logs should include the app name, what the step was trying to do, the key source record identifier, target record identifier when known, and the real Gravity error reference.
+- Failure email subjects must be short, operational, include the real workflow name as plain text, include the app or failed operation when helpful, and contain no placeholders, emojis, or line breaks.
+- Failure email bodies must be dynamic and specific to the failed step. Include step name, app, workflow name, error message reference, timestamp reference when available, relevant source/target record identifiers, a short next-step instruction to check the workflow run logs, and language that matches the configured failure behavior (`Continue Loop`, `Go to Next Step`, `Stop Workflow`, or `Break Loop`).
+- If recipients are prepared in a map step, use the actual output from that map in the `To` field. If recipients are not provided, leave a visible confirmation placeholder and report it as unresolved.
+- Before finishing, review every `{{ ... }}` reference used in logs and emails and fix hallucinated or invalid paths. Do not leave placeholders like `{step error message}`, `{timestamp}`, `{record id}`, or `{workflow name}` in the final Gravity configuration.
 
 Safety rules:
 - Implement duplicate checks before create steps.

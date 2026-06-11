@@ -103,6 +103,7 @@ The prompt should tell Gravity AI to:
 - Preserve step numbers, names, trigger configuration, loops, conditionals, args, pagination, and code blocks unless a Gravity UI constraint requires a small adaptation.
 - Prefer SuiteScript for non-trivial NetSuite steps and Shopify GraphQL Beta for non-trivial Shopify steps.
 - Configure app-step failure behavior, logs, and success logs where specified.
+- Include explicit Flow Control instructions for logs and failure emails in the generated Gravity AI prompt, following the same rules as `gravity-knowledge/references/logs-and-emails.md`: configure app steps, avoid native-step logging by default, choose Stop Workflow/Continue Loop/Go to Next Step/Break Loop by risk, use app-prefixed logs, and verify all email/log variable references.
 - Verify every Gravity variable reference and fix invalid references before finishing.
 - Report any values that cannot be implemented because credentials, connector actions, field IDs, internal IDs, or recipients are missing.
 
