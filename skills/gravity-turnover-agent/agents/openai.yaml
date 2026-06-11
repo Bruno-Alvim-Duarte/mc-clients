@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gravity Turnover Agent"
+  short_description: "Turnover questions for Gravity builds"
+  default_prompt: "Use $gravity-turnover-agent to review a Linear task or project brief and produce turnover questions before a Gravity integration build."

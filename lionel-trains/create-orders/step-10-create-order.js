@@ -499,6 +499,38 @@ function execute() {
       return true;
     }
 
+    function setSalesOrderHeaderLocation(salesOrderRec) {
+      if (!NETSUITE_LOCATION_ID) {
+        return;
+      }
+
+      salesOrderRec.setValue({
+        fieldId: 'location',
+        value: NETSUITE_LOCATION_ID,
+        ignoreFieldChange: true
+      });
+    }
+
+    function forceSavedSalesOrderHeaderLocation(salesOrderId) {
+      if (!NETSUITE_LOCATION_ID) {
+        return false;
+      }
+
+      record.submitFields({
+        type: 'salesorder',
+        id: salesOrderId,
+        values: {
+          location: NETSUITE_LOCATION_ID
+        },
+        options: {
+          enableSourcing: false,
+          ignoreMandatoryFields: true
+        }
+      });
+
+      return true;
+    }
+
     function setTransactionAddress(salesOrderRec, fieldId, addressData) {
       if (!addressData) return;
 
@@ -665,13 +697,6 @@ function execute() {
       });
     }
 
-    if (NETSUITE_LOCATION_ID) {
-      salesOrderRec.setValue({
-        fieldId: 'location',
-        value: NETSUITE_LOCATION_ID
-      });
-    }
-
     if (NETSUITE_ORDER_CLASS_ID) {
       salesOrderRec.setValue({
         fieldId: 'class',
@@ -799,6 +824,8 @@ function execute() {
       });
     }
 
+    setSalesOrderHeaderLocation(salesOrderRec);
+
     // -----------------------------
     // Save
     // -----------------------------
@@ -806,6 +833,7 @@ function execute() {
       enableSourcing: true,
       ignoreMandatoryFields: false
     });
+    const headerLocationForced = forceSavedSalesOrderHeaderLocation(salesOrderId);
 
     return {
       success: true,
@@ -820,6 +848,7 @@ function execute() {
       discountAmount: discountAmount,
       discountLineAdded: discountLineAdded,
       shippingAmount,
+      headerLocationId: NETSUITE_LOCATION_ID,
       originatedFromAmazon: originatedFromAmazon,
       isAmazonFbmOrder: isAmazonFbmOrder,
       hasConcordFulfillmentLine: hasConcordFulfillmentLine,
