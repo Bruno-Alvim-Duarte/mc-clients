@@ -45,3 +45,11 @@ Review the JSON before finalizing.
 - Referenced fields are produced by earlier steps.
 - No vague TODO comments remain inside executable code.
 - Placeholder tokens are obvious and listed in `openQuestions`.
+
+## Gravity AI Prompt
+
+- The prompt includes the complete workflow JSON as `WORKFLOW_JSON`.
+- The prompt is self-contained and does not reference local files, skills, or repository paths.
+- The prompt tells Gravity AI how to handle app steps, native steps, loops, conditionals, code blocks, logging, failure behavior, and variable references.
+- The prompt instructs Gravity AI to preserve the JSON unless a Gravity UI limitation requires a small adaptation.
+- The prompt asks Gravity AI to report unresolved placeholders, credentials, connector actions, field IDs, recipients, and adaptations.

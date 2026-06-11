@@ -1,4 +1,4 @@
 interface:
   display_name: "Gravity Workflow JSON Agent"
-  short_description: "Generate technical Gravity workflow JSON"
-  default_prompt: "Use $gravity-workflow-json-agent to turn requirements or a Linear task into a technical Gravity workflow JSON."
+  short_description: "Generate Gravity JSON and AI prompts"
+  default_prompt: "Use $gravity-workflow-json-agent to turn requirements or a Linear task into a technical Gravity workflow JSON and a Gravity AI implementation prompt."
