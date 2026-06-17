@@ -1,0 +1,55 @@
+query {
+  shopifyPaymentsAccount {
+    balanceTransactions(
+      first: 250
+      hideTransfers: true
+      query: "[Previous Step: input[0].balanceTransactionsSearchQuery]"
+      sortKey: PROCESSED_AT
+    ) {
+      edges {
+        node {
+          id
+          type
+          test
+          transactionDate
+          amount {
+            amount
+            currencyCode
+          }
+          fee {
+            amount
+            currencyCode
+          }
+          net {
+            amount
+            currencyCode
+          }
+          sourceId
+          sourceType
+          sourceOrderTransactionId
+          associatedPayout {
+            id
+            status
+          }
+          associatedOrder {
+            id
+            name
+          }
+          adjustmentsOrders {
+            orderTransactionId
+            amount {
+              amount
+              currencyCode
+            }
+            name
+          }
+          adjustmentReason
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}

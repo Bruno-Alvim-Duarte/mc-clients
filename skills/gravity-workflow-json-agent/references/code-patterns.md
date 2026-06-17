@@ -25,6 +25,52 @@ return {
 };
 ```
 
+## Early Config Map
+
+For most workflows, include a config map within the first three steps when the workflow has reusable constants, recipients, internal IDs, checkpoint keys, retry keys, reusable defaults, or pre-defined values used across multiple maps, steps, or functions.
+
+Use the config map as a single source for values that would otherwise be repeated across the workflow. If a required value is unknown, keep it visible with a `{{CONFIRM_*}}` placeholder instead of inventing IDs, recipients, or field values.
+
+Example:
+
+```javascript
+const state = input['map3HMU']?.[0] || {};
+const checkpoint = state.checkpoint || {};
+const updatedAfter = checkpoint.lastUpdatedAfter || '2026-05-01T00:00:00';
+
+return [{
+  workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
+  recipients: 'bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com',
+  region: 'North America',
+  marketplaceScope: 'All marketplaces',
+  orderStatus: 'Shipped',
+  fulfillmentChannel: 'AFN',
+  updatedAfter,
+  updatedBefore: input.system?.nowIso || new Date().toISOString(),
+  pageSize: 50,
+  retryOrders: state.retryOrders || [],
+  retryOrderIds: state.retryOrderIds || [],
+  checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
+  retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+  retryFetchedOrdersKey: state.keys?.retryFetchedOrdersKey || 'lionel_fba_invoice_retry_fetched_orders',
+  netsuite: {
+    customerInternalId: '3793910',
+    customerName: '9561387706 Amazon Customer',
+    subsidiary: '4',
+    divisionFieldId: 'department',
+    division: '4',
+    class: '38',
+    location: '32'
+  },
+  chargeItems: {
+    shipping: '{{CONFIRM_NS_SHIPPING_ITEM_ID}}',
+    giftWrap: '{{CONFIRM_NS_GIFT_WRAP_ITEM_ID}}',
+    tax: '{{CONFIRM_NS_TAX_ITEM_ID}}',
+    promotionDiscount: '{{CONFIRM_NS_PROMOTION_DISCOUNT_ITEM_ID}}'
+  }
+}];
+```
+
 Avoid depending on vague generated keys if a Step reference can be used in `args`. When code must use `input.<stepKey>`, choose a readable key based on the step name and use it consistently.
 
 ## Gravity Argument References

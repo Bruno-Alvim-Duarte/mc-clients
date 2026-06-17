@@ -79,11 +79,61 @@
               "value": "[Step 3: input[0].netsuiteShopifyOrderValue]"
             }
           ],
-          "code": "const orderInfo = ${JSON.stringify(input?.mapShopifyOrderIdentifiers?.[0])};\n\nfunction execute() {\n  try {\n    const shopifyOrderValue = String(orderInfo?.netsuiteShopifyOrderValue || '').trim();\n\n    if (!shopifyOrderValue) {\n      return [];\n    }\n\n    const salesOrderSearch = search.create({\n      type: search.Type.SALES_ORDER,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['custbody_shopify_ord_id', 'is', shopifyOrderValue]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'entity' }),\n        search.createColumn({ name: 'memo' }),\n        search.createColumn({ name: 'custbody_shopify_ord_id' })\n      ]\n    });\n\n    const matches = [];\n\n    salesOrderSearch.run().each(function (result) {\n      const salesOrderId = result.getValue({ name: 'internalid' });\n      const salesOrderRec = record.load({\n        type: record.Type.SALES_ORDER,\n        id: salesOrderId,\n        isDynamic: false\n      });\n\n      const itemLines = {};\n      const lineCount = salesOrderRec.getLineCount({ sublistId: 'item' });\n\n      for (let line = 0; line < lineCount; line++) {\n        const lineKey = `line${line + 1}`;\n        itemLines[lineKey] = {\n          item: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line: line }),\n          itemDisplay: salesOrderRec.getSublistText({ sublistId: 'item', fieldId: 'item', line: line }),\n          quantity: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: line }),\n          rate: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'rate', line: line }),\n          amount: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'amount', line: line })\n        };\n      }\n\n      matches.push({\n        id: String(salesOrderId),\n        type: 'salesord',\n        fields: {\n          id: String(salesOrderId),\n          tranid: result.getValue({ name: 'tranid' }),\n          entity: result.getValue({ name: 'entity' }),\n          memo: result.getValue({ name: 'memo' }),\n          custbody_shopify_ord_id: result.getValue({ name: 'custbody_shopify_ord_id' })\n        },\n        sublists: {\n          item: itemLines\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
-        },
-        {
-          "stepNumber": 5,
-          "name": "If/Else - Sales Order Found",
+	    "code": "const orderInfo = ${JSON.stringify(input?.mapShopifyOrderIdentifiers?.[0])};\n\nfunction execute() {\n  try {\n    const shopifyOrderValue = String(orderInfo?.netsuiteShopifyOrderValue || '').trim();\n\n    if (!shopifyOrderValue) {\n      return [];\n    }\n\n    const salesOrderSearch = search.create({\n      type: search.Type.SALES_ORDER,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['custbody_shopify_ord_id', 'is', shopifyOrderValue]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'entity' }),\n        search.createColumn({ name: 'memo' }),\n        search.createColumn({ name: 'custbody_shopify_ord_id' })\n      ]\n    });\n\n    const matches = [];\n\n    salesOrderSearch.run().each(function (result) {\n      const salesOrderId = result.getValue({ name: 'internalid' });\n      const salesOrderRec = record.load({\n        type: record.Type.SALES_ORDER,\n        id: salesOrderId,\n        isDynamic: false\n      });\n\n      const itemLines = {};\n      const lineCount = salesOrderRec.getLineCount({ sublistId: 'item' });\n\n      for (let line = 0; line < lineCount; line++) {\n        const lineKey = `line${line + 1}`;\n        itemLines[lineKey] = {\n          item: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line: line }),\n          itemDisplay: salesOrderRec.getSublistText({ sublistId: 'item', fieldId: 'item', line: line }),\n          quantity: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'quantity', line: line }),\n          rate: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'rate', line: line }),\n          amount: salesOrderRec.getSublistValue({ sublistId: 'item', fieldId: 'amount', line: line })\n        };\n      }\n\n      matches.push({\n        id: String(salesOrderId),\n        type: 'salesord',\n        fields: {\n          id: String(salesOrderId),\n          tranid: result.getValue({ name: 'tranid' }),\n          entity: result.getValue({ name: 'entity' }),\n          memo: result.getValue({ name: 'memo' }),\n          custbody_shopify_ord_id: result.getValue({ name: 'custbody_shopify_ord_id' })\n        },\n        sublists: {\n          item: itemLines\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
+	},
+	{
+	  "stepNumber": 4.1,
+	  "name": "If/Else - Sales Order Search Failed",
+	  "type": "conditional",
+	  "results": 1,
+	  "condition": "[Step 4: input[0].success] eq false"
+	},
+	{
+	  "stepNumber": 4.2,
+	  "name": "Flow Control - Log Sales Order Search Failure",
+	  "type": "action",
+	  "args": [
+	    {
+	      "label": "Action",
+	      "value": "doNothing"
+	    },
+	    {
+	      "label": "Emit Log",
+	      "value": "Yes"
+	    },
+	    {
+	      "label": "Log Type",
+	      "value": "error"
+	    },
+	    {
+	      "label": "Log Message",
+	      "value": "Lionel RMA workflow failed while searching for the NetSuite Sales Order. Shopify order: [Step 3: input[0].shopifyOrderName]. Error: [Step 4: input[0].message]"
+	    }
+	  ]
+	},
+	{
+	  "stepNumber": 4.3,
+	  "name": "Email - Send Sales Order Search Failure",
+	  "type": "action",
+	  "results": 1,
+	  "args": [
+	    {
+	      "label": "To",
+	      "value": "jjones@lionel.com, AMiller@lionel.com"
+	    },
+	    {
+	      "label": "Subject",
+	      "value": "Lionel RMA workflow failed - Sales Order search"
+	    },
+	    {
+	      "label": "Body",
+	      "value": "The Lionel RMA workflow failed while searching for the NetSuite Sales Order.\n\nShopify Order: [Step 3: input[0].shopifyOrderName]\nShopify Order ID: [Step 3: input[0].shopifyOrderId]\nError: [Step 4: input[0].message]\n\nStack:\n[Step 4: input[0].stack]"
+	    }
+	  ]
+	},
+	{
+	  "stepNumber": 5,
+	  "name": "If/Else - Sales Order Found",
           "type": "conditional",
           "results": 1,
           "condition": "[Step 4: input[0].id] nempty null"
@@ -132,7 +182,57 @@
 	                  "value": "[Step 8: input[0].externalId]"
 	                }
 	              ],
-	              "code": "const refundRequest = ${JSON.stringify(input?.iterateRefundRequests?.[0])};\n\nfunction execute() {\n  try {\n    const externalId = String(refundRequest?.externalId || '').trim();\n\n    if (!externalId) {\n      return [];\n    }\n\n    const rmaSearch = search.create({\n      type: search.Type.RETURN_AUTHORIZATION,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['externalidstring', 'is', externalId]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'externalid' }),\n        search.createColumn({ name: 'createdfrom' }),\n        search.createColumn({ name: 'statusref' })\n      ]\n    });\n\n    const matches = [];\n\n    rmaSearch.run().each(function (result) {\n      matches.push({\n        id: String(result.getValue({ name: 'internalid' })),\n        type: 'rtnauth',\n        fields: {\n          id: String(result.getValue({ name: 'internalid' })),\n          tranid: result.getValue({ name: 'tranid' }),\n          externalid: result.getValue({ name: 'externalid' }),\n          createdfrom: result.getValue({ name: 'createdfrom' }),\n          status: result.getValue({ name: 'statusref' })\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
+		              "code": "const refundRequest = ${JSON.stringify(input?.iterateRefundRequests?.[0])};\n\nfunction execute() {\n  try {\n    const externalId = String(refundRequest?.externalId || '').trim();\n\n    if (!externalId) {\n      return [];\n    }\n\n    const rmaSearch = search.create({\n      type: search.Type.RETURN_AUTHORIZATION,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['externalidstring', 'is', externalId]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'externalid' }),\n        search.createColumn({ name: 'createdfrom' }),\n        search.createColumn({ name: 'statusref' })\n      ]\n    });\n\n    const matches = [];\n\n    rmaSearch.run().each(function (result) {\n      matches.push({\n        id: String(result.getValue({ name: 'internalid' })),\n        type: 'rtnauth',\n        fields: {\n          id: String(result.getValue({ name: 'internalid' })),\n          tranid: result.getValue({ name: 'tranid' }),\n          externalid: result.getValue({ name: 'externalid' }),\n          createdfrom: result.getValue({ name: 'createdfrom' }),\n          status: result.getValue({ name: 'statusref' })\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
+		    },
+	            {
+	              "stepNumber": 9.1,
+	              "name": "If/Else - Existing RMA Search Failed",
+	              "type": "conditional",
+	              "results": 1,
+	              "condition": "[Step 9: input[0].success] eq false"
+	            },
+	            {
+	              "stepNumber": 9.2,
+	              "name": "Flow Control - Log Existing RMA Search Failure",
+	              "type": "action",
+	              "args": [
+	                {
+	                  "label": "Action",
+	                  "value": "doNothing"
+	                },
+	                {
+	                  "label": "Emit Log",
+	                  "value": "Yes"
+	                },
+	                {
+	                  "label": "Log Type",
+	                  "value": "error"
+	                },
+	                {
+	                  "label": "Log Message",
+	                  "value": "Lionel RMA workflow failed while checking for an existing RMA. Shopify order: [Step 8: input[0].shopifyOrderName]. Refund ID: [Step 8: input[0].refundId]. Error: [Step 9: input[0].message]"
+	                }
+	              ]
+	            },
+	            {
+	              "stepNumber": 9.3,
+	              "name": "Email - Send Existing RMA Search Failure",
+	              "type": "action",
+	              "results": 1,
+	              "args": [
+	                {
+	                  "label": "To",
+	                  "value": "jjones@lionel.com, AMiller@lionel.com"
+	                },
+	                {
+	                  "label": "Subject",
+	                  "value": "Lionel RMA workflow failed - Existing RMA check"
+	                },
+	                {
+	                  "label": "Body",
+	                  "value": "The Lionel RMA workflow failed while checking whether an RMA already exists.\n\nShopify Order: [Step 8: input[0].shopifyOrderName]\nShopify Order ID: [Step 8: input[0].shopifyOrderId]\nShopify Refund ID: [Step 8: input[0].refundId]\nExternal ID: [Step 8: input[0].externalId]\nError: [Step 9: input[0].message]\n\nStack:\n[Step 9: input[0].stack]"
+	                }
+	              ]
 	            },
             {
               "stepNumber": 10,
@@ -161,11 +261,68 @@
               "name": "NetSuite - Create Return Authorization",
               "type": "action",
               "results": 1,
-              "code": "const salesOrder = ${JSON.stringify(input?.netsuiteFindMatchingSalesOrder?.[0])};\nconst rmaData = ${JSON.stringify(input?.mapMatchRefundedItemsToSalesOrderLines?.[0])};\n\nfunction execute() {\n  try {\n    const returnAuthRec = record.transform({\n      fromType: 'salesorder',\n      fromId: salesOrder.id,\n      toType: 'returnauthorization',\n      isDynamic: true\n    });\n\n    returnAuthRec.setValue({ fieldId: 'externalid', value: rmaData.externalId });\n    returnAuthRec.setValue({ fieldId: 'custbody_shopify_ord_id', value: rmaData.shopifyOrderName });\n    returnAuthRec.setValue({ fieldId: 'memo', value: `Shopify Order ${rmaData.shopifyOrderName}` });\n    returnAuthRec.setValue({ fieldId: 'otherrefnum', value: rmaData.shopifyOrderName });\n\n    const matchedItems = rmaData.matched || [];\n    let hasValidLine = false;\n    const lineCount = returnAuthRec.getLineCount({ sublistId: 'item' });\n\n    for (let i = 0; i < lineCount; i++) {\n      const itemId = returnAuthRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i });\n      const match = matchedItems.find(function (item) { return Number(item.netsuiteItemId) === Number(itemId); });\n\n      returnAuthRec.selectLine({ sublistId: 'item', line: i });\n\n      if (match && Number(match.quantity) > 0) {\n        returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: Number(match.quantity) });\n        hasValidLine = true;\n      } else {\n        returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: 0 });\n      }\n\n      returnAuthRec.commitLine({ sublistId: 'item' });\n    }\n\n    if (!hasValidLine) {\n      throw new Error(`No valid refunded item lines were found for Shopify order ${rmaData.shopifyOrderName}.`);\n    }\n\n    const returnAuthId = returnAuthRec.save();\n    return { id: returnAuthId, externalId: rmaData.externalId };\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
-            },
-            {
-              "stepNumber": 14,
-              "name": "Map - RMA Notification",
+	              "code": "const salesOrder = ${JSON.stringify(input?.netsuiteFindMatchingSalesOrder?.[0])};\nconst rmaData = ${JSON.stringify(input?.mapMatchRefundedItemsToSalesOrderLines?.[0])};\n\nfunction execute() {\n  try {\n    const returnAuthRec = record.transform({\n      fromType: 'salesorder',\n      fromId: salesOrder.id,\n      toType: 'returnauthorization',\n      isDynamic: true\n    });\n\n    returnAuthRec.setValue({ fieldId: 'externalid', value: rmaData.externalId });\n    returnAuthRec.setValue({ fieldId: 'custbody_shopify_ord_id', value: rmaData.shopifyOrderName });\n    returnAuthRec.setValue({ fieldId: 'memo', value: `Shopify Order ${rmaData.shopifyOrderName}` });\n    returnAuthRec.setValue({ fieldId: 'otherrefnum', value: rmaData.shopifyOrderName });\n\n    const matchedItems = rmaData.matched || [];\n    let hasValidLine = false;\n    const lineCount = returnAuthRec.getLineCount({ sublistId: 'item' });\n\n    for (let i = 0; i < lineCount; i++) {\n      const itemId = returnAuthRec.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i });\n      const match = matchedItems.find(function (item) { return Number(item.netsuiteItemId) === Number(itemId); });\n\n      returnAuthRec.selectLine({ sublistId: 'item', line: i });\n\n      if (match && Number(match.quantity) > 0) {\n        returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: Number(match.quantity) });\n        hasValidLine = true;\n      } else {\n        returnAuthRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: 0 });\n      }\n\n      returnAuthRec.commitLine({ sublistId: 'item' });\n    }\n\n    if (!hasValidLine) {\n      throw new Error(`No valid refunded item lines were found for Shopify order ${rmaData.shopifyOrderName}.`);\n    }\n\n    const returnAuthId = returnAuthRec.save();\n    return { id: returnAuthId, externalId: rmaData.externalId };\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
+	            },
+	            {
+	              "stepNumber": 13.1,
+	              "name": "If/Else - RMA Creation Failed",
+	              "type": "conditional",
+	              "results": 1,
+	              "condition": "[Step 13: input[0].success] eq false"
+	            },
+	            {
+	              "stepNumber": 13.2,
+	              "name": "Flow Control - Log RMA Creation Failure",
+	              "type": "action",
+	              "args": [
+	                {
+	                  "label": "Action",
+	                  "value": "doNothing"
+	                },
+	                {
+	                  "label": "Emit Log",
+	                  "value": "Yes"
+	                },
+	                {
+	                  "label": "Log Type",
+	                  "value": "error"
+	                },
+	                {
+	                  "label": "Log Message",
+	                  "value": "Lionel RMA workflow failed while creating the NetSuite RMA. Shopify order: [Step 11: input[0].shopifyOrderName]. Refund ID: [Step 11: input[0].refundId]. Error: [Step 13: input[0].message]"
+	                }
+	              ]
+	            },
+	            {
+	              "stepNumber": 13.3,
+	              "name": "Email - Send RMA Creation Failure",
+	              "type": "action",
+	              "results": 1,
+	              "args": [
+	                {
+	                  "label": "To",
+	                  "value": "jjones@lionel.com, AMiller@lionel.com"
+	                },
+	                {
+	                  "label": "Subject",
+	                  "value": "Lionel RMA workflow failed - RMA creation"
+	                },
+	                {
+	                  "label": "Body",
+	                  "value": "The Lionel RMA workflow failed while creating the NetSuite RMA.\n\nShopify Order: [Step 11: input[0].shopifyOrderName]\nShopify Order ID: [Step 11: input[0].shopifyOrderId]\nShopify Refund ID: [Step 11: input[0].refundId]\nExternal ID: [Step 11: input[0].externalId]\nError: [Step 13: input[0].message]\n\nStack:\n[Step 13: input[0].stack]"
+	                }
+	              ]
+	            },
+	            {
+	              "stepNumber": 13.4,
+	              "name": "If/Else - RMA Created",
+	              "type": "conditional",
+	              "results": 1,
+	              "condition": "[Step 13: input[0].id] nempty null"
+	            },
+	            {
+	              "stepNumber": 14,
+	              "name": "Map - RMA Notification",
               "type": "map",
               "input": "Step 11, Step 13",
               "results": 1,

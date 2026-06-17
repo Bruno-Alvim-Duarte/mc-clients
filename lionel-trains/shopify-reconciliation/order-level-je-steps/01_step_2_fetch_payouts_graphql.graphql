@@ -1,0 +1,40 @@
+query {
+  shopifyPaymentsAccount {
+    payouts(
+      first: 50
+      query: "[Step 1: input[0].shopifyPayoutSearchQuery]"
+      sortKey: ISSUED_AT
+    ) {
+      edges {
+        node {
+          id
+          legacyResourceId
+          issuedAt
+          status
+          transactionType
+          net {
+            amount
+            currencyCode
+          }
+          summary {
+            adjustmentsFee { amount }
+            adjustmentsGross { amount }
+            advanceFees { amount }
+            chargesFee { amount }
+            chargesGross { amount }
+            refundsFee { amount }
+            refundsFeeGross { amount }
+            reservedFundsFee { amount }
+            reservedFundsGross { amount }
+            retriedPayoutsFee { amount }
+            retriedPayoutsGross { amount }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}

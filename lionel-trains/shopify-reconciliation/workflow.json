@@ -1,0 +1,270 @@
+{
+  "steps": [
+    {
+      "code": "\n// Resolve Store Config from Gravity Environment\n// Supports: Auto World Store (division 30), Big Country Toys (division 40)\n// Fixed NetSuite header values: subsidiary 3, currency 1\n\n// NOTE: In production, the storeName should come from an environment variable or workflow input.\n// For now, defaulting to \"Big Country Toys\" to match the connected Shopify account.\nconst storeName = input.workflowArguments?.environment || \"Big Country Toys\";\nconst emailsRecipients = \"bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com\"\n\nconst storeConfigs = {\n  \"Auto World\": {\n    storeName: \"Auto World Store\",\n    division: \"3\",\n    subsidiary: \"3\",\n    currency: \"1\",\n  },\n  \"Big Country Toys\": {\n    storeName: \"Big Country Toys\",\n    division: \"4\",\n    subsidiary: \"3\",\n    currency: \"1\",\n  }\n};\n\nconst storeConfig = storeConfigs[storeName];\n\nif (!storeConfig) {\n  throw new Error(`Unknown store: \"${storeName}\". Supported stores: ${Object.keys(storeConfigs).join(\", \")}`);\n}\n\n\nconst { lastIssuedAt, lastPayoutId } = input.memory\n\n// Build Shopify payout search query string for the GraphQL query argument.\n// status:PAID is always included. When a checkpoint exists, issued_at:>= is added\n// so the server-side filter handles the checkpoint window.\nconst queryParts = [\"status:paid\"];\n\nif (lastIssuedAt) {\n  // Use >= so a payout sharing the checkpoint timestamp is not lost.\n  // Step 3 applies only the ID tie-breaker for equal timestamps.\n  queryParts.push(`issued_at:>=${lastIssuedAt}`);\n}\n\n// Cutoff date: only include payouts issued after May 1, 2025\nqueryParts.push(\"issued_at:>=2026-06-01\");\n\nconst shopifyPayoutSearchQuery = queryParts.join(\" \");\n\nreturn [{\n  storeConfig,\n  checkpoint: { lastIssuedAt, lastPayoutId },\n  shopifyPayoutSearchQuery,\n  emailsRecipients\n}];\n",
+      "name": "Map - Resolve Store Config",
+      "type": "map",
+      "input": "No data imported",
+      "results": 1,
+      "stepNumber": 1
+    },
+    {
+      "args": [
+        {
+          "label": "Query",
+          "value": "query {\n  shopifyPaymentsAccount {\n    payouts(\n      first:..."
+        }
+      ],
+      "name": "Shopify - Shopify: Fetch Payouts (GraphQL)",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 2
+    },
+    {
+      "code": "\n// Extract Payouts from Shopify Response\n// Step 2 handles server-side filtering (status:PAID + checkpoint window via issued_at:>=).\n// This step only extracts, flattens, validates, and applies the equal-timestamp ID tie-breaker.\n\nconst shopifyRaw = input[\"shopifyGraphqlBetaYYYC\"] || [];\nconst storeConfigStep = input[\"mapRPVQ\"] || [];\nconst storeConfig = (storeConfigStep[0] || {}).storeConfig || {};\nconst checkpoint = (storeConfigStep[0] || {}).checkpoint || {};\n\nconst graphqlResult = shopifyRaw[0] || {};\nconst payoutConnection = graphqlResult?.shopifyPaymentsAccount?.payouts || {};\nconst edges = payoutConnection.edges || [];\nconst pageInfo = payoutConnection.pageInfo || {};\n\nconst allReturnedPayouts = edges.map(edge => edge.node).filter(Boolean);\n\nconst lastIssuedAt = checkpoint.lastIssuedAt || null;\nconst lastPayoutId = checkpoint.lastPayoutId || null;\n\nconst eligiblePayouts = allReturnedPayouts.filter(p => {\n  // Defensive validation: Step 2 should only return PAID payouts.\n  // If Shopify returns a non-PAID payout, the server-side filter is broken.\n  if (p.status !== \"PAID\") {\n    throw new Error(`Shopify GraphQL returned non-PAID payout ${p.id} with status ${p.status}; Step 2 query filter is not working`);\n  }\n\n  // Step 2 handles the checkpoint window with issued_at:>=lastIssuedAt.\n  // This tie-breaker only prevents reprocessing the exact checkpoint payout\n  // when issuedAt equals the checkpoint timestamp.\n  if (lastIssuedAt && lastPayoutId && p.issuedAt === lastIssuedAt && p.id.split(\"/\").pop() <= lastPayoutId) {\n    return false;\n  }\n\n  return true;\n});\n\nconst flattenedPayouts = eligiblePayouts.map(p => {\n  const summary = p.summary || {};\n  const flatSummary = {};\n\n  for (const [key, val] of Object.entries(summary)) {\n    flatSummary[key] = val?.amount !== undefined ? val.amount : val;\n  }\n\n  return {\n    id: p.id.split(\"/\").pop(),\n    issuedAt: p.issuedAt,\n    status: p.status,\n    transactionType: p.transactionType || null,\n    netAmount: p.net?.amount || \"0\",\n    currencyCode: p.net?.currencyCode || null,\n    summary: flatSummary,\n    storeConfig\n  };\n});\n\nreturn [{\n  totalFetched: allReturnedPayouts.length,\n  totalPaid: allReturnedPayouts.length,\n  totalEligible: flattenedPayouts.length,\n  hasNextPage: pageInfo.hasNextPage || false,\n  endCursor: pageInfo.endCursor || null,\n  payouts: flattenedPayouts\n}];\n",
+      "name": "Map - Extract Payouts from Shopify Response",
+      "type": "map",
+      "input": "Step 1, Step 2",
+      "results": 1,
+      "stepNumber": 3
+    },
+    {
+      "name": "Memory - Reset Payout Result Logs",
+      "type": "memory",
+      "memory": [
+        {
+          "key": "shopifyPayoutReconciliationLogs",
+          "savesOn": "always"
+        }
+      ],
+      "stepNumber": 4
+    },
+    {
+      "name": "Iterate - Loop: For Each Payout",
+      "type": "loop",
+      "results": 50,
+      "children": [
+        {
+          "name": "If/Else - If Transaction Type = WITHDRAWAL",
+          "type": "conditional",
+          "results": 1,
+          "condition": "[Step 5: input[0].transactionType] = WITHDRAWAL",
+          "stepNumber": 6
+        },
+        {
+          "code": "\n// Build Idempotency Key\n// Input: current payout from iterator\n// Output: payoutId + externalId for duplicate detection\n// IMPORTANT: Do NOT use legacyResourceId. Use payout.id only.\n\nconst payout = input[\"iterateJVCA\"][0];\n\nif (!payout || !payout.id) {\n  throw new Error(\"Missing payout or payout.id in current iteration item\");\n}\n\nconst payoutId = payout.id;\nconst externalId = `shopify_payout_${payoutId}`;\n\nreturn [{\n  payoutId,\n  externalId\n}];\n",
+          "name": "Map - Build Idempotency Key",
+          "type": "map",
+          "input": "Step 5",
+          "results": 1,
+          "stepNumber": 8
+        },
+        {
+          "name": "Netsuite - NetSuite: Search Existing JE by ExternalId",
+          "type": "action",
+          "results": 1,
+          "stepNumber": 9
+        },
+        {
+          "name": "If/Else - If JE Already Exists → Skip",
+          "type": "conditional",
+          "condition": "[Step 9: input[0].found] = true",
+          "stepNumber": 10
+        },
+        {
+          "code": "\n// Log Payout Result\n// Produces one structured result per payout and appends it to workflow memory.\n\nconst MEMORY_KEY = \"shopifyPayoutReconciliationLogs\";\n\nfunction readMemoryArray(key) {\n  const raw = input.memory?.[key];\n\n  if (!raw) return [];\n  if (Array.isArray(raw)) return raw;\n\n  try {\n    const parsed = JSON.parse(raw);\n    return Array.isArray(parsed) ? parsed : [];\n  } catch (error) {\n    return [];\n  }\n}\n\nconst storeConfig = ((input[\"mapRPVQ\"] || [])[0] || {}).storeConfig || {};\nconst accounting = (input[\"mapVTMX\"] || [])[0] || {};\nconst jePayload = (input[\"mapNOVA\"] || [])[0] || {};\nconst nsCreateResult = (input[\"netsuiteExecuteCustomCodeET8Q\"] || [])[0] || {};\nconst nsSearch = (input[\"netsuiteExecuteCustomCodeSU2D\"] || [])[0] || {};\nconst skipLog = (input[\"mapEZVM\"] || [])[0] || {};\n\nlet resultStatus = \"unknown\";\nlet journalEntryId = null;\nlet errorStep = null;\nlet errorMessage = null;\n\nif (skipLog && skipLog.resultStatus === \"skipped_already_processed\") {\n  resultStatus = \"skipped_already_processed\";\n  journalEntryId =\n    skipLog.journalEntryId ||\n    (nsSearch.existingJournalEntry ? nsSearch.existingJournalEntry.internalId : null) ||\n    null;\n} else if (nsCreateResult && (nsCreateResult.id || nsCreateResult.journalEntryId)) {\n  resultStatus = \"created\";\n  journalEntryId = String(nsCreateResult.id || nsCreateResult.journalEntryId);\n} else if (nsCreateResult && (nsCreateResult.error || nsCreateResult.message)) {\n  resultStatus = \"failed\";\n  errorStep = \"NetSuite: Create Journal Entry\";\n  errorMessage = nsCreateResult.error || nsCreateResult.message || \"Unknown NetSuite error\";\n}\n\nconst logEntry = {\n  store: storeConfig.storeName || \"unknown\",\n  payoutId: accounting.payoutId || jePayload.payoutId || null,\n  externalId: accounting.externalId || jePayload.externalId || null,\n  issuedAt: accounting.issuedAt || null,\n  issuedDate: accounting.issuedDate || null,\n  status: accounting.status || null,\n  transactionType: accounting.transactionType || null,\n  currencyCode: accounting.currencyCode || null,\n  netAmount: accounting.netAmount !== undefined ? accounting.netAmount : null,\n  feeTotal: accounting.feeTotal !== undefined ? accounting.feeTotal : null,\n  clearingAmount: accounting.clearingAmount !== undefined ? accounting.clearingAmount : null,\n  journalEntryId,\n  resultStatus,\n  errorStep,\n  errorMessage,\n  timestamp: new Date().toISOString()\n};\n\nconst existingLogs = readMemoryArray(MEMORY_KEY);\nconst accumulatedLogs = existingLogs.concat([logEntry]);\n\nreturn [{\n  ...logEntry,\n  accumulatedLogs\n}];\n",
+          "name": "Map - Log Payout Result",
+          "type": "map",
+          "input": "Step 1, Step 13, Step 14, Step 15, Step 9, Step 11",
+          "results": 1,
+          "stepNumber": 16
+        },
+        {
+          "name": "Memory - Store Accumulated Payout Logs",
+          "type": "memory",
+          "memory": [
+            {
+              "key": "shopifyPayoutReconciliationLogs",
+              "savesOn": "always"
+            }
+          ],
+          "results": 3,
+          "stepNumber": 17
+        }
+      ],
+      "loopTarget": {
+        "name": "Map - Extract Payouts from Shopify Response",
+        "stepNumber": 3
+      },
+      "stepNumber": 5
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "continue"
+        },
+        {
+          "label": "Emit Log",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Type",
+          "value": "info"
+        },
+        {
+          "label": "Log Message",
+          "value": "["
+        }
+      ],
+      "name": "Flow Control - Continue, emit log",
+      "type": "action",
+      "stepNumber": 7
+    },
+    {
+      "code": "\n// Log: Skipped (Already Processed)\n// This payout already has a Journal Entry in NetSuite — skip creation.\n// Reads existingJournalEntry from Step 6 SuiteScript search output.\n\nconst payout = input[\"iterateJVCA\"];\nconst idempotency = input[\"mapE3SM\"] || {};\nconst nsSearch = input[\"netsuiteExecuteCustomCodeSU2D\"] || {};\nconst existingJe = nsSearch.existingJournalEntry || (nsSearch.items || [])[0] || null;\nconst storeConfigStep = input[\"mapRPVQ\"] || [];\nconst storeConfig = (storeConfigStep[0] || {}).storeConfig || {};\n\nreturn [{\n  store: storeConfig.storeName || \"unknown\",\n  payoutId: payout?.id || idempotency.payoutId || nsSearch.payoutId || \"unknown\",\n  externalId: idempotency.externalId || nsSearch.externalId || \"unknown\",\n  issuedAt: payout?.issuedAt || null,\n  issuedDate: payout?.issuedAt ? String(payout.issuedAt).split(\"T\")[0] : null,\n  status: payout?.status || null,\n  transactionType: payout?.transactionType || payout?.type || null,\n  currencyCode: payout?.currencyCode || payout?.net?.currencyCode || null,\n  netAmount: Number(payout?.netAmount || payout?.net?.amount || 0),\n  feeTotal: null,\n  clearingAmount: null,\n  journalEntryId: existingJe?.internalId || null,\n  resultStatus: \"skipped_already_processed\",\n  errorStep: null,\n  errorMessage: null\n}];\n",
+      "name": "Map - Log: Skipped (Already Processed)",
+      "type": "map",
+      "input": "Step 5, Step 8, Step 9, Step 1",
+      "results": 1,
+      "stepNumber": 11
+    },
+    {
+      "code": "\n// Normalize Shopify Payout\n// Validates required fields and normalizes the payout structure for downstream steps.\n// IMPORTANT: Does NOT use legacyResourceId.\n\nconst payout = input[\"iterateJVCA\"][0];\nconst storeConfigStep = input[\"mapRPVQ\"] || [];\nconst storeConfig = (storeConfigStep[0] || {}).storeConfig || {};\n\nif (!payout?.id) {\n  throw new Error(\"Missing Shopify payout id\");\n}\n\nif (!payout?.issuedAt) {\n  throw new Error(`Missing issuedAt for payout ${payout.id}`);\n}\n\nconst issuedDate = String(payout.issuedAt).split(\"T\")[0];\nconst netAmountRaw = payout.net?.amount ?? payout.netAmount;\n\nif (netAmountRaw === undefined || netAmountRaw === null || netAmountRaw === \"\") {\n  throw new Error(`Missing net amount for payout ${payout.id}`);\n}\n\nreturn [{\n  payoutId: payout.id,\n  externalId: `shopify_payout_${payout.id}`,\n  issuedAt: payout.issuedAt,\n  issuedDate,\n  memo: `Shopify payout reconciliation ${issuedDate} (${storeConfig.storeName})`,\n  status: payout.status || null,\n  transactionType: payout.transactionType || payout.type || null,\n  currencyCode: payout.currencyCode || payout.net?.currencyCode || null,\n  netAmount: Number(netAmountRaw),\n  summary: payout.summary || {},\n  storeConfig\n}];\n",
+      "name": "Map - Normalize Shopify Payout",
+      "type": "map",
+      "input": "Step 5, Step 1",
+      "results": 1,
+      "stepNumber": 12
+    },
+    {
+      "code": "\n// Calculate Accounting Values\n// Computes fee totals, clearing amount, and journal entry lines.\n// Rules:\n//   - Include all summary fields ending in \"Fee\" or \"Fees\"\n//   - Include advanceFees\n//   - Exclude refundsFeeGross\n//   - Convert signed amounts into debit/credit sides\n//   - Never send negative debit or credit values\n//   - Omit zero-amount lines\n//   - Block JE creation if debits ≠ credits after rounding\n\nconst data = (input[\"mapPV2R\"] || [])[0] || {};\nconst summary = data.summary || {};\n\nconst roundMoney = (n) => Math.round(Number(n || 0) * 100) / 100;\n\n// Sum all fee fields: keys ending in \"Fee\" or \"Fees\" (except refundsFeeGross), plus advanceFees\nconst feeTotal = Math.abs(Object.entries(summary)\n  .filter(([key]) => {\n    if (key === \"refundsFeeGross\") return false;\n    if (key.endsWith(\"Fee\") || key.endsWith(\"Fees\")) return true;\n    if (key === \"advanceFees\") return true;\n    return false;\n  })\n  .reduce((sum, [, value]) => {\n    return sum + Number(value?.amount !== undefined ? value.amount : (value ?? 0));\n  }, 0));\n\nconst netAmount = Number(data.netAmount || 0);\nconst clearingSignedAmount = -(netAmount + feeTotal);\n\nfunction toJournalLine(account, signedAmount, memo, extra) {\n  const amount = roundMoney(Math.abs(Number(signedAmount || 0)));\n  if (amount === 0) return null;\n\n  if (signedAmount >= 0) {\n    return { account, debit: amount, memo, ...(extra || {}) };\n  }\n  return { account, credit: amount, memo, ...(extra || {}) };\n}\n\nconst lines = [\n  toJournalLine(\"1113\", netAmount, data.memo, { division: data.storeConfig?.division}),\n  toJournalLine(\"471\", feeTotal, data.memo, { department: \"11\", division: data.storeConfig?.division }),\n  toJournalLine(\"1114\", clearingSignedAmount, data.memo, { division: data.storeConfig?.division})\n].filter(Boolean);\n\nconst totalDebits = roundMoney(lines.reduce((sum, line) => sum + Number(line.debit || 0), 0));\nconst totalCredits = roundMoney(lines.reduce((sum, line) => sum + Number(line.credit || 0), 0));\nconst isBalanced = totalDebits === totalCredits;\n\nif (!isBalanced) {\n  throw new Error(\n    `Unbalanced journal entry for payout ${data.payoutId}: debits ${totalDebits}, credits ${totalCredits}`\n  );\n}\n\nreturn [{\n  ...data,\n  feeTotal: roundMoney(feeTotal),\n  clearingAmount: roundMoney(Math.abs(clearingSignedAmount)),\n  clearingSignedAmount: roundMoney(clearingSignedAmount),\n  lines,\n  totalDebits,\n  totalCredits,\n  isBalanced\n}];\n",
+      "name": "Map - Calculate Accounting Values",
+      "type": "map",
+      "input": "Step 12",
+      "results": 1,
+      "stepNumber": 13
+    },
+    {
+      "code": "\n// Build NetSuite Journal Entry Payload\n// Constructs the JE record structure for the NetSuite SuiteScript Execute Custom Code step.\n// Header: externalId, subsidiary, currency, division, tranDate, memo\n// Lines: 1095 (East West Receivables), 8616 (Credit Card Fees, dept 810), 1099 (Shopify Clearing)\n//\n// NOTE on approvalStatus:\n//   Not fully aligned with client yet. If storeConfig.approvalStatus is set, it will be included.\n//   Otherwise omitted. The SuiteScript step should handle this gracefully.\n\nconst data = (input[\"mapVTMX\"] || [])[0] || {};\n\nif (!data.isBalanced) {\n  throw new Error(`Unbalanced journal entry for payout ${data.payoutId}`);\n}\n\n// Build line items in NetSuite JournalEntry sublist format\nconst nsLines = data.lines.map((line, idx) => {\n  const nsLine = {\n    account: { id: line.account },\n    memo: line.memo\n  };\n\n  if (line.debit !== undefined && line.debit > 0) {\n    nsLine.debit = line.debit;\n  }\n  if (line.credit !== undefined && line.credit > 0) {\n    nsLine.credit = line.credit;\n  }\n  if (line.department) {\n    nsLine.department = { id: line.department };\n  }\n  if (line.division) {\n    nsLine.division = { id: line.division };\n  }\n\n  return nsLine;\n});\n\nconst payload = {\n  externalId: data.externalId,\n  subsidiary: { id: \"3\" },\n  currency: { id: \"1\" },\n  tranDate: data.issuedDate,\n  memo: data.memo,\n  line: nsLines\n};\n\n// Approval status — only include if defined in store config\nif (data.storeConfig && data.storeConfig.approvalStatus) {\n  payload.approvalStatus = data.storeConfig.approvalStatus;\n}\n\nreturn [{\n  payoutId: data.payoutId,\n  externalId: data.externalId,\n  issuedAt: data.issuedAt,\n  issuedDate: data.issuedDate,\n  memo: data.memo,\n  status: data.status,\n  transactionType: data.transactionType,\n  currencyCode: data.currencyCode,\n  netAmount: data.netAmount,\n  feeTotal: data.feeTotal,\n  clearingAmount: data.clearingAmount,\n  totalDebits: data.totalDebits,\n  totalCredits: data.totalCredits,\n  storeConfig: data.storeConfig,\n  payload\n}];\n",
+      "name": "Map - Build NetSuite JE Payload",
+      "type": "map",
+      "input": "Step 13",
+      "results": 1,
+      "stepNumber": 14
+    },
+    {
+      "name": "Netsuite - NetSuite: Create Journal Entry",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 15
+    },
+    {
+      "code": "\n// Build Batch Summary\n// Aggregates all payout log results from workflow memory.\n\nconst MEMORY_KEY = \"shopifyPayoutReconciliationLogs\";\n\nfunction readMemoryArray(key) {\n  const raw = input.memory?.[key];\n\n  if (!raw) return [];\n  if (Array.isArray(raw)) return raw;\n\n  try {\n    const parsed = JSON.parse(raw);\n    return Array.isArray(parsed) ? parsed : [];\n  } catch (error) {\n    return [];\n  }\n}\n\nconst extractionStep = (input[\"mapBEND\"] || [])[0] || {};\nconst logResults = readMemoryArray(MEMORY_KEY);\n\nconst totalFetched =\n  extractionStep.totalFetched !== undefined\n    ? extractionStep.totalFetched\n    : (extractionStep.payouts || []).length || logResults.length;\n\nconst totalEligible =\n  extractionStep.totalEligible !== undefined\n    ? extractionStep.totalEligible\n    : (extractionStep.payouts || []).length || logResults.length;\n\nlet createdCount = 0;\nlet skippedCount = 0;\nlet failedCount = 0;\nconst failedPayouts = [];\n\nfor (const log of logResults) {\n  if (log.resultStatus === \"created\") {\n    createdCount++;\n  } else if (log.resultStatus === \"skipped_already_processed\") {\n    skippedCount++;\n  } else if (log.resultStatus === \"failed\") {\n    failedCount++;\n    failedPayouts.push({\n      payoutId: log.payoutId,\n      externalId: log.externalId,\n      errorStep: log.errorStep,\n      errorMessage: log.errorMessage\n    });\n  } else {\n    failedCount++;\n    failedPayouts.push({\n      payoutId: log.payoutId,\n      externalId: log.externalId,\n      errorStep: log.errorStep || \"Unknown\",\n      errorMessage: log.errorMessage || \"Unknown result status: \" + log.resultStatus\n    });\n  }\n}\n\nconst runTimestamp = new Date().toISOString();\n\nconst summary = {\n  runTimestamp,\n  totalPayoutsFetched: totalFetched,\n  totalEligiblePayouts: totalEligible,\n  createdCount,\n  skippedCount,\n  failedCount,\n  failedPayouts,\n  hasFailures: failedCount > 0,\n  summaryMessage: [\n    `Shopify Payout Reconciliation Summary (${runTimestamp})`,\n    `Total payouts fetched: ${totalFetched}`,\n    `Total eligible payouts: ${totalEligible}`,\n    `Created: ${createdCount}`,\n    `Skipped (already processed): ${skippedCount}`,\n    `Failed: ${failedCount}`,\n    failedPayouts.length > 0\n      ? `\\nFailed payout details:\\n` + failedPayouts.map(f =>\n          `  - Payout ${f.payoutId} (${f.externalId}): [${f.errorStep}] ${f.errorMessage}`\n        ).join(\"\\n\")\n      : \"\"\n  ].filter(Boolean).join(\"\\n\")\n};\n\nreturn [summary];\n",
+      "name": "Map - Build Batch Summary",
+      "type": "map",
+      "input": "Step 3",
+      "results": 1,
+      "stepNumber": 18
+    },
+    {
+      "args": [
+        {
+          "label": "Emit Log",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Type",
+          "value": "info"
+        },
+        {
+          "label": "Log Message",
+          "value": "[Step 18: input[0].summaryMessage]"
+        }
+      ],
+      "name": "Flow Control - Alert: Batch Summary",
+      "type": "action",
+      "stepNumber": 19
+    },
+    {
+      "code": "\n// Update Checkpoint\n// Determines the latest payout processed to persist as the checkpoint\n// for the next run. Uses payout id as tie-breaker when multiple payouts\n// share the same issuedAt date.\n\nconst logResults = input[\"mapGFNH\"] || [];\nconst eligiblePayouts = input[\"mapBEND\"] || [];\n\n// Only update checkpoint if we processed at least one payout successfully\nconst processedLogs = logResults.filter(\n  log => log.resultStatus === \"created\" || log.resultStatus === \"skipped_already_processed\"\n);\n\nif (processedLogs.length === 0) {\n  // No successful processing, do not advance checkpoint\n  return [{\n    checkpointUpdated: false,\n    reason: \"No payouts were successfully processed in this run\",\n    lastIssuedAt: null,\n    lastPayoutId: null\n  }];\n}\n\n// Find the latest payout by issuedAt, using payoutId as tie-breaker\nlet latestLog = processedLogs[0];\n\nfor (const log of processedLogs) {\n  const currentDate = log.issuedAt || \"\";\n  const latestDate = latestLog.issuedAt || \"\";\n\n  if (currentDate > latestDate) {\n    latestLog = log;\n  } else if (currentDate === latestDate) {\n    // Tie-breaker: use payout id (string comparison of GIDs)\n    const currentId = String(log.payoutId || \"\");\n    const latestId = String(latestLog.payoutId || \"\");\n    if (currentId > latestId) {\n      latestLog = log;\n    }\n  }\n}\n\nreturn [{\n  checkpointUpdated: true,\n  lastIssuedAt: latestLog.issuedAt,\n  lastPayoutId: latestLog.payoutId,\n  totalProcessed: processedLogs.length,\n  timestamp: new Date().toISOString()\n}];\n",
+      "name": "Map - Update Checkpoint",
+      "type": "map",
+      "input": "Step 3, Step 16",
+      "results": 1,
+      "stepNumber": 20
+    },
+    {
+      "name": "If/Else - If Checkpoint Updated = true",
+      "type": "conditional",
+      "condition": "[Step 20: input[0].checkpointUpdated] = true",
+      "stepNumber": 21
+    },
+    {
+      "name": "Memory - Set lastIssuedAt and LastPayoutId",
+      "type": "memory",
+      "memory": [
+        {
+          "key": "lastIssuedAt",
+          "savesOn": "success"
+        },
+        {
+          "key": "lastPayoutId",
+          "savesOn": "success"
+        },
+        {
+          "key": "shopifyPayoutReconciliationLogs",
+          "savesOn": "success"
+        }
+      ],
+      "results": 2,
+      "stepNumber": 22
+    }
+  ],
+  "triggers": [
+    {
+      "name": "Schedule - Schedule: Daily Payout Reconciliation",
+      "type": "schedule",
+      "message": "Schedule: Daily Payout Reconciliation",
+      "schedule": {
+        "days": [
+          {
+            "type": "select",
+            "label": "Monday",
+            "value": 1
+          },
+          {
+            "type": "select",
+            "label": "Tuesday",
+            "value": 2
+          },
+          {
+            "type": "select",
+            "label": "Wednesday",
+            "value": 3
+          },
+          {
+            "type": "select",
+            "label": "Thursday",
+            "value": 4
+          },
+          {
+            "type": "select",
+            "label": "Friday",
+            "value": 5
+          }
+        ],
+        "mode": "interval",
+        "dayNames": [],
+        "intervalMs": 86400000
+      }
+    }
+  ],
+  "workflow": {
+    "id": "6rLsk4JyGzz9",
+    "name": "Shopify to NetSuite - Shopify Payout Reconciliation",
+    "version": "0.0.15",
+    "isActive": true,
+    "publishedOn": "2026-05-29T17:44:01.000Z"
+  }
+}
