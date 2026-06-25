@@ -20,6 +20,21 @@ Typical structure:
 
 Choose the checkpoint field carefully. Prefer a monotonic field such as created timestamp, updated timestamp, issued date, or an ordered ID. If records can share the same timestamp, include a tie-breaker strategy.
 
+## Webhook Concurrency And Race Conditions
+
+Design webhook-triggered workflows as if multiple runs can execute in parallel. When two webhook events arrive almost at the same time, both runs may read the target system before either run has finished writing. This can break create-or-update logic that depends on a "search first, then create if missing" pattern.
+
+Example failure mode:
+
+1. Webhook run A receives an event that should create an order.
+2. Webhook run B receives a near-simultaneous event that should update the created order's date.
+3. Run B searches for the order while run A is still creating it.
+4. Run B does not find the order and incorrectly creates a duplicate.
+
+For webhook workflows, think through idempotency, stable external IDs, duplicate keys, unique constraints in the target system, and whether related event types need ordering or a queue-like design. Avoid relying only on a read-before-write existence check when parallel webhook runs can observe stale state.
+
+Scheduled workflows have not shown this same race-condition pattern in normal Gravity usage. Even when the scheduled time for the next run has already passed, the next scheduled run waits for the current run to finish before starting.
+
 ## Map Step Practices
 
 Keep business logic in map steps. Use map steps to:

@@ -22,6 +22,8 @@ Treat Gravity workflows as step-based integrations: a trigger starts the workflo
 
 - Prefer a **schedule** trigger for most integrations, especially polling, batch processing, and checkpointed pagination.
 - Use a **webhook** trigger when an external system must push events into Gravity.
+- Treat **webhook** workflows as potentially concurrent. Two webhook runs can start at nearly the same time, so design create-or-update logic with race conditions in mind.
+- Scheduled workflows have not shown the same race-condition risk in normal Gravity usage: even if the next schedule time passes, the next scheduled run waits for the current run to finish.
 - Avoid **app event** triggers unless the workflow specifically requires one.
 
 ## Native Steps

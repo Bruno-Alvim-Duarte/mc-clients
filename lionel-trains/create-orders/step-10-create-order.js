@@ -18,6 +18,9 @@ function execute() {
     const DEFAULT_CURRENCY_ID = 1;
     const AMAZON_FBM_DELIVERY_DATE_FIELD_ID = 'custbody_amz_fbm_del_date';
     const SHIP_COMPLETE_FIELD_ID = 'shipcomplete';
+    const SHOPIFY_DISCOUNT_PERCENT_FIELD_ID = 'custbody_shopify_disc_pct';
+    const MONEY_PRECISION = 2;
+    const PERCENT_PRECISION = 2;
     const SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES = {
       'gid://shopify/Location/72788476094': NETSUITE_AMAZON_LOCATION_ID
     };
@@ -338,6 +341,55 @@ function execute() {
         order?.totalDiscountsSet?.shopMoney?.amount ||
         0
       ) || 0;
+    }
+
+    function roundNumber(value, precision) {
+      const factor = Math.pow(10, precision);
+      return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+    }
+
+    function getSalesOrderProductSubtotal(salesOrderRec) {
+      let subtotal = 0;
+      const lineCount = salesOrderRec.getLineCount({ sublistId: 'item' });
+
+      for (let i = 0; i < lineCount; i++) {
+        const amount = getAmount(salesOrderRec.getSublistValue({
+          sublistId: 'item',
+          fieldId: 'amount',
+          line: i
+        })) || 0;
+
+        if (amount > 0) {
+          subtotal += amount;
+        }
+      }
+
+      return roundNumber(subtotal, MONEY_PRECISION);
+    }
+
+    function getShopifyDiscountPercent(productSubtotal, discountAmount) {
+      if (!productSubtotal || productSubtotal <= 0) return 0;
+      if (!discountAmount || discountAmount <= 0) return 0;
+
+      return roundNumber(
+        Math.abs(discountAmount) / productSubtotal * 100,
+        PERCENT_PRECISION
+      );
+    }
+
+    function setShopifyDiscountPercent(salesOrderRec, discountAmount) {
+      const productSubtotal = getSalesOrderProductSubtotal(salesOrderRec);
+      const discountPercent = getShopifyDiscountPercent(productSubtotal, discountAmount);
+
+      salesOrderRec.setValue({
+        fieldId: SHOPIFY_DISCOUNT_PERCENT_FIELD_ID,
+        value: discountPercent
+      });
+
+      return {
+        productSubtotal: productSubtotal,
+        discountPercent: discountPercent
+      };
     }
 
     function setNonTaxableItemLine(salesOrderRec) {
@@ -815,6 +867,11 @@ function execute() {
       isAmazonFbmOrder
     );
 
+    const discountPercentData = setShopifyDiscountPercent(
+      salesOrderRec,
+      discountAmount
+    );
+
     const shippingAmount = getShopifyShippingAmount(order);
 
     if (shippingAmount > 0) {
@@ -846,6 +903,8 @@ function execute() {
       createdOpenLineCount: createdOpenLineCount,
       createdClosedLineCount: createdClosedLineCount,
       discountAmount: discountAmount,
+      productSubtotal: discountPercentData.productSubtotal,
+      discountPercent: discountPercentData.discountPercent,
       discountLineAdded: discountLineAdded,
       shippingAmount,
       headerLocationId: NETSUITE_LOCATION_ID,
