@@ -1,0 +1,327 @@
+{
+  "steps": [
+    {
+      "code": "return {\n    emailRecipients: `bruno@mindcloud.co, jjones@lionel.com, AMiller@lionel.com, ${input?.workflowArguments.storePersonEmail}`\n};",
+      "name": "Map - Map Email Recipients",
+      "type": "map",
+      "input": "No data imported",
+      "results": 1,
+      "stepNumber": 1
+    },
+    {
+      "args": [
+        {
+          "label": "Query",
+          "value": "query GetRefundedExportedOrders($first: Int = 50, $after: St..."
+        },
+        {
+          "label": "Variables",
+          "value": "{"
+        }
+      ],
+      "name": "Shopify - Get Orders",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 2
+    },
+    {
+      "code": "const res = input.shopifyGraphqlBetaZSZ7?.[0];\n\n  const edges = res?.data?.orders?.edges ?? [];\n\n  return edges.map((edge) => {\n    const node = edge?.node ?? {};\n\n    const adminGraphqlApiId = node.id ?? null;\n    const id = adminGraphqlApiId\n      ? Number(adminGraphqlApiId.split(\"/\").pop())\n      : null;\n\n    return {\n      id,\n      adminGraphqlApiId,\n      name: node.name ?? null,\n      number: node.number ?? null,\n      orderNumber: node.number ?? null,\n\n      // Useful if you need pagination/checkpoint later\n      cursor: edge?.cursor ?? null,\n\n      __meta: {\n        presentation: {\n          type: \"card\",\n          fields: {},\n          entityUrl: \"\"\n        }\n      }\n    };\n  });\n",
+      "name": "Map - Map Shopify GraphQL Orders to REST Order Shape",
+      "type": "map",
+      "input": "Step 2",
+      "results": 43,
+      "stepNumber": 3
+    },
+    {
+      "name": "Iterate - Iterate - Loop through Shopify Orders",
+      "type": "loop",
+      "children": [
+        {
+          "code": "const order = input['iterateHLTD'][0];\n\nconst orderName = order.name || String(order.number || order.orderNumber || '');\nconst orderId = String(order.id || '');\n\nreturn [{\n  shopifyOrderId: orderId,\n  shopifyOrderName: orderName,\n  netsuiteShopifyOrderValue: orderName,\n  salesOrderMemo: `Shopify Order ${orderName}`\n}];",
+          "name": "Map - Map - Shopify Order Identifiers",
+          "type": "map",
+          "input": "Step 4",
+          "results": 1,
+          "stepNumber": 5
+        },
+        {
+          "name": "Netsuite - NetSuite - Find Matching Sales Order",
+          "type": "action",
+          "results": 1,
+          "stepNumber": 6,
+          "code": "const orderInfo = ${JSON.stringify(input?.mapBPU2?.[0])};\n\nfunction execute() {\n  try {\n    const shopifyOrderValue = String(orderInfo?.shopifyOrderName || '').trim();\n\n    if (!shopifyOrderValue) {\n      return [];\n    }\n\n    const salesOrderSearch = search.create({\n      type: search.Type.SALES_ORDER,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['custbody_shopify_ord_id', 'is', shopifyOrderValue]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'entity' }),\n        search.createColumn({ name: 'memo' }),\n        search.createColumn({ name: 'custbody_shopify_ord_id' }),\n        search.createColumn({ name: 'statusref' })\n      ]\n    });\n\n    const matches = [];\n\n    salesOrderSearch.run().each(function (result) {\n      const salesOrderId = result.getValue({ name: 'internalid' });\n\n      const salesOrderRec = record.load({\n        type: record.Type.SALES_ORDER,\n        id: salesOrderId,\n        isDynamic: false\n      });\n\n      const orderstatus = salesOrderRec.getValue({\n        fieldId: 'orderstatus'\n      });\n\n      const statusText = salesOrderRec.getText({\n        fieldId: 'orderstatus'\n      });\n\n      const itemLines = {};\n      const lineCount = salesOrderRec.getLineCount({\n        sublistId: 'item'\n      });\n\n      for (let line = 0; line < lineCount; line++) {\n        const lineKey = 'line' + (line + 1);\n\n        itemLines[lineKey] = {\n          item: salesOrderRec.getSublistValue({\n            sublistId: 'item',\n            fieldId: 'item',\n            line\n          }),\n          itemDisplay: salesOrderRec.getSublistText({\n            sublistId: 'item',\n            fieldId: 'item',\n            line\n          }),\n          quantity: salesOrderRec.getSublistValue({\n            sublistId: 'item',\n            fieldId: 'quantity',\n            line\n          }),\n          rate: salesOrderRec.getSublistValue({\n            sublistId: 'item',\n            fieldId: 'rate',\n            line\n          }),\n          amount: salesOrderRec.getSublistValue({\n            sublistId: 'item',\n            fieldId: 'amount',\n            line\n          })\n        };\n      }\n\n      matches.push({\n        id: String(salesOrderId),\n        type: 'salesord',\n        fields: {\n          id: String(salesOrderId),\n          tranid: result.getValue({ name: 'tranid' }),\n          entity: result.getValue({ name: 'entity' }),\n          memo: result.getValue({ name: 'memo' }),\n          custbody_shopify_ord_id: result.getValue({\n            name: 'custbody_shopify_ord_id'\n          }),\n          orderstatus,\n          status: statusText,\n          statusref: result.getValue({ name: 'statusref' })\n        },\n        sublists: {\n          item: itemLines\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error\n    };\n  }\n}\n\nexecute();"
+        },
+        {
+          "code": "\nconst salesOrder = input?.netsuiteGetQuerySearchNVPT?.[0] || null;\nconst orderIdentifiers = input?.mapBPU2?.[0] || {};\n\nconst ELIGIBLE_STATUSES = ['D', 'E', 'F', 'G'];\n\nconst STATUS_LABELS = {\n  A: 'Pending Approval',\n  B: 'Pending Fulfillment',\n  C: 'Cancelled',\n  D: 'Partially Fulfilled',\n  E: 'Pending Billing / Partially Fulfilled',\n  F: 'Pending Billing',\n  G: 'Billed',\n  H: 'Closed'\n};\n\nconst shopifyOrderName = orderIdentifiers.shopifyOrderName || '';\nconst shopifyOrderId = orderIdentifiers.shopifyOrderId || '';\n\n// Check if Sales Order was found\nconst salesOrderFound = !!(salesOrder && salesOrder.id);\n\nif (!salesOrderFound) {\n  return [{\n    salesOrderFound: false,\n    isEligible: false,\n    shopifyOrderName,\n    shopifyOrderId,\n    salesOrderId: null,\n    tranid: null,\n    orderstatus: null,\n    statusText: null,\n    skipReason: 'Sales Order not found in NetSuite for Shopify order ' + shopifyOrderName\n  }];\n}\n\nconst orderstatus = (salesOrder.fields && salesOrder.fields.orderstatus) || '';\nconst statusText = (salesOrder.fields && salesOrder.fields.status) || STATUS_LABELS[orderstatus] || 'Unknown';\nconst salesOrderId = salesOrder.fields ? salesOrder.fields.id : salesOrder.id;\nconst tranid = (salesOrder.fields && salesOrder.fields.tranid) || '';\n\nconst isEligible = ELIGIBLE_STATUSES.includes(orderstatus);\n\nlet skipReason = null;\nif (!isEligible) {\n  skipReason = 'Sales Order status is not eligible for Return Authorization transform. ' +\n    'Shopify Order: ' + shopifyOrderName + ', ' +\n    'NetSuite SO ID: ' + salesOrderId + ', ' +\n    'TranID: ' + tranid + ', ' +\n    'Order Status: ' + orderstatus + ' (' + statusText + ')';\n}\n\nreturn [{\n  salesOrderFound: true,\n  isEligible,\n  shopifyOrderName,\n  shopifyOrderId,\n  salesOrderId,\n  tranid,\n  orderstatus,\n  statusText,\n  skipReason\n}];\n",
+          "name": "Map - Map - Validate Sales Order Status",
+          "type": "map",
+          "input": "Step 6, Step 5",
+          "results": 1,
+          "stepNumber": 7
+        },
+        {
+          "name": "If/Else - If/Else - Sales Order Found and Status Eligible",
+          "type": "conditional",
+          "results": 1,
+          "condition": "[Step 7: input[0].salesOrderFound] = true AND [Step 7: input[0].isEligible] = true",
+          "stepNumber": 8
+        }
+      ],
+      "loopTarget": {
+        "name": "Map - Map Shopify GraphQL Orders to REST Order Shape",
+        "stepNumber": 3
+      },
+      "stepNumber": 4
+    },
+    {
+      "args": [
+        {
+          "label": "Order Id",
+          "value": "[Step 5: input[0].shopifyOrderId]"
+        }
+      ],
+      "name": "Shopify - Shopify - Get Refunds by Order Id",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 9
+    },
+    {
+      "code": "const orderInfo = input['mapBPU2'][0];\nconst refunds = input['shopifyListOrderRefundsXVJ2'] || [];\n\nreturn refunds\n  .map(refund => {\n    const refundId = String(refund.id || '');\n\n    const items = (refund.refundLineItems || [])\n      .filter(line => Number(line.quantity || 0) > 0)\n      .map(line => ({\n        refundLineItemId: String(line.id || ''),\n        lineItemId: String(line.lineItemId || line.lineItem?.id || ''),\n        variantId: String(line.lineItem?.variantId || line.lineItem?.variant?.id || ''),\n        sku: String(line.lineItem?.sku || '').trim().toUpperCase(),\n        name: line.lineItem?.name || '',\n        quantity: Number(line.quantity || 0),\n        subtotal: Number(line.subtotal || 0),\n        totalTax: Number(line.totalTax || 0)\n      }))\n      .filter(line => line.lineItemId && line.sku && line.quantity > 0);\n\n    return {\n      refundId,\n      shopifyOrderId: orderInfo.shopifyOrderId,\n      shopifyOrderName: orderInfo.shopifyOrderName,\n      externalId: `lionel-shopify-rma-${orderInfo.shopifyOrderId}-${refundId}`,\n      items\n    };\n  })\n  .filter(refund => refund.refundId && refund.items.length > 0);",
+      "name": "Map - Map - Refund Requests",
+      "type": "map",
+      "input": "Step 5, Step 6, Step 9",
+      "results": 1,
+      "stepNumber": 10
+    },
+    {
+      "name": "Iterate - Iterate - Loop through Refund Requests",
+      "type": "loop",
+      "children": [
+        {
+          "name": "Netsuite - NetSuite - Find Existing RMA",
+          "type": "action",
+          "results": 1,
+          "stepNumber": 12,
+          "code": "const refundRequest = ${JSON.stringify(input?.iterate0UAR?.[0])};\n\nfunction execute() {\n  try {\n    const externalId = String(refundRequest?.externalId || '').trim();\n\n    if (!externalId) {\n      return [];\n    }\n\n    const rmaSearch = search.create({\n      type: search.Type.RETURN_AUTHORIZATION,\n      filters: [\n        ['mainline', 'is', 'T'],\n        'AND',\n        ['externalidstring', 'is', externalId]\n      ],\n      columns: [\n        search.createColumn({ name: 'internalid' }),\n        search.createColumn({ name: 'tranid' }),\n        search.createColumn({ name: 'externalid' }),\n        search.createColumn({ name: 'createdfrom' }),\n        search.createColumn({ name: 'statusref' })\n      ]\n    });\n\n    const matches = [];\n\n    rmaSearch.run().each(function (result) {\n      matches.push({\n        id: String(result.getValue({ name: 'internalid' })),\n        type: 'rtnauth',\n        fields: {\n          id: String(result.getValue({ name: 'internalid' })),\n          tranid: result.getValue({ name: 'tranid' }),\n          externalid: result.getValue({ name: 'externalid' }),\n          createdfrom: result.getValue({ name: 'createdfrom' }),\n          status: result.getValue({ name: 'statusref' })\n        }\n      });\n\n      return false;\n    });\n\n    return matches;\n\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      error: error\n    };\n  }\n}\n\nexecute();"
+        },
+        {
+          "name": "If/Else - If/Else - No Existing RMA",
+          "type": "conditional",
+          "results": 1,
+          "condition": "[Step 12: input[0].id] empty null",
+          "stepNumber": 13
+        }
+      ],
+      "loopTarget": {
+        "name": "Map - Map - Refund Requests",
+        "stepNumber": 10
+      },
+      "stepNumber": 11
+    },
+    {
+      "code": "const salesOrder = input['netsuiteGetQuerySearchNVPT'][0];\nconst refund = input['iterate0UAR'][0];\nconst nsLines = Object.values(salesOrder?.sublists?.item || {});\n\nfunction normalize(value) {\n  return String(value || '').trim().toUpperCase();\n}\n\nfunction toNumber(value) {\n  const number = Number(value || 0);\n  return isNaN(number) ? 0 : number;\n}\n\nfunction getNsLineKey(line, index) {\n  return String(\n    line.orderline ||\n    line.lineuniquekey ||\n    line.line ||\n    index\n  );\n}\n\nfunction getNsLineQuantity(line) {\n  return toNumber(line.quantity || 0);\n}\n\nconst matched = [];\nconst missing = [];\nconst allocatedByNsLineKey = {};\n\nfor (const refundItem of refund.items || []) {\n  let quantityToAllocate = toNumber(refundItem.quantity);\n  const refundSku = normalize(refundItem.sku);\n\n  if (!refundSku || quantityToAllocate <= 0) {\n    continue;\n  }\n\n  const candidateLines = nsLines\n    .map((line, index) => ({\n      line,\n      index,\n      nsLineKey: getNsLineKey(line, index),\n      nsSku: normalize(line.itemDisplay)\n    }))\n    .filter(candidate => candidate.nsSku === refundSku);\n\n  if (candidateLines.length === 0) {\n    missing.push({\n      ...refundItem,\n      reason: 'No matching NetSuite Sales Order line found by SKU.'\n    });\n    continue;\n  }\n\n  for (const candidate of candidateLines) {\n    if (quantityToAllocate <= 0) {\n      break;\n    }\n\n    const nsLine = candidate.line;\n    const nsLineKey = candidate.nsLineKey;\n\n    const nsLineQuantity = getNsLineQuantity(nsLine);\n    const alreadyAllocated = toNumber(allocatedByNsLineKey[nsLineKey]);\n    const availableOnLine = Math.max(nsLineQuantity - alreadyAllocated, 0);\n\n    if (availableOnLine <= 0) {\n      continue;\n    }\n\n    const allocatedQty = Math.min(quantityToAllocate, availableOnLine);\n\n    matched.push({\n      sku: refundItem.sku,\n      itemName: refundItem.name,\n      netsuiteItemId: nsLine.item,\n\n      netsuiteLineKey: nsLineKey,\n      netsuiteLine: nsLine.line || '',\n      netsuiteOrderLine: nsLine.orderline || '',\n      netsuiteLineUniqueKey: nsLine.lineuniquekey || '',\n      netsuiteLineQuantity: nsLineQuantity,\n\n      quantity: allocatedQty,\n      subtotal: refundItem.subtotal,\n      totalTax: refundItem.totalTax || 0,\n\n      matchMethod: 'sku'\n    });\n\n    allocatedByNsLineKey[nsLineKey] = alreadyAllocated + allocatedQty;\n    quantityToAllocate -= allocatedQty;\n  }\n\n  if (quantityToAllocate > 0) {\n    missing.push({\n      ...refundItem,\n      remainingQuantity: quantityToAllocate,\n      reason: 'Refund quantity could not be fully allocated to matching NetSuite Sales Order lines.'\n    });\n  }\n}\n\nreturn [{\n  refundId: refund.refundId,\n  externalId: refund.externalId,\n  shopifyOrderId: refund.shopifyOrderId,\n  shopifyOrderName: refund.shopifyOrderName,\n  matched,\n  missing,\n  hasMatchedItems: matched.length > 0,\n  hasMissingItems: missing.length > 0\n}];",
+      "name": "Map - Map - Match Refunded Items to Sales Order Lines",
+      "type": "map",
+      "input": "Step 6, Step 11",
+      "results": 1,
+      "stepNumber": 14
+    },
+    {
+      "name": "If/Else - If/Else - Has Matched Refund Items",
+      "type": "conditional",
+      "results": 1,
+      "condition": "[Step 14: input[0].hasMatchedItems] = true",
+      "stepNumber": 15
+    },
+    {
+      "name": "Netsuite - NetSuite - Create Return Authorization",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 16,
+      "code": "const salesOrder = ${JSON.stringify(input?.netsuiteGetQuerySearchNVPT?.[0])};\nconst rmaData = ${JSON.stringify(input?.map4QBZ?.[0])};\n\nfunction safeGetSublistValue(rec, sublistId, fieldId, line) {\n  try {\n    return rec.getSublistValue({\n      sublistId: sublistId,\n      fieldId: fieldId,\n      line: line\n    });\n  } catch (e) {\n    return 'ERROR: ' + e.message;\n  }\n}\n\nfunction safeGetSublistText(rec, sublistId, fieldId, line) {\n  try {\n    return rec.getSublistText({\n      sublistId: sublistId,\n      fieldId: fieldId,\n      line: line\n    });\n  } catch (e) {\n    return 'ERROR: ' + e.message;\n  }\n}\n\nfunction getItemKey(itemId) {\n  const itemIdNumber = Number(itemId);\n\n  if (isNaN(itemIdNumber)) {\n    return null;\n  }\n\n  return String(itemIdNumber);\n}\n\nfunction collectItemLines(rec) {\n  const lines = [];\n  const count = rec.getLineCount({\n    sublistId: 'item'\n  });\n\n  for (let i = 0; i < count; i++) {\n    lines.push({\n      line: i,\n      itemId: safeGetSublistValue(rec, 'item', 'item', i),\n      itemText: safeGetSublistText(rec, 'item', 'item', i),\n      lineUniqueKey: safeGetSublistValue(rec, 'item', 'lineuniquekey', i),\n      quantity: safeGetSublistValue(rec, 'item', 'quantity', i),\n      quantityFulfilled: safeGetSublistValue(rec, 'item', 'quantityfulfilled', i),\n      quantityBilled: safeGetSublistValue(rec, 'item', 'quantitybilled', i),\n      quantityReturned: safeGetSublistValue(rec, 'item', 'quantityreturned', i),\n      quantityRemaining: safeGetSublistValue(rec, 'item', 'quantityremaining', i),\n      isClosed: safeGetSublistValue(rec, 'item', 'isclosed', i),\n      itemType: safeGetSublistValue(rec, 'item', 'itemtype', i),\n      description: safeGetSublistValue(rec, 'item', 'description', i),\n      rate: safeGetSublistValue(rec, 'item', 'rate', i),\n      amount: safeGetSublistValue(rec, 'item', 'amount', i)\n    });\n  }\n\n  return lines;\n}\n\nfunction normalizeMatchedItems(matchedItems) {\n  return matchedItems.map(function (item) {\n    return {\n      netsuiteItemId: item.netsuiteItemId,\n      netsuiteItemIdNumber: Number(item.netsuiteItemId),\n      quantity: item.quantity,\n      quantityNumber: Number(item.quantity),\n      sku: item.sku,\n      title: item.title,\n      lineUniqueKey:\n        item.lineUniqueKey ||\n        item.lineuniquekey ||\n        item.netsuiteLineUniqueKey\n    };\n  });\n}\n\nfunction buildMatchedQuantityBuckets(matchedItems) {\n  const buckets = {};\n  const invalidMatchedItems = [];\n\n  matchedItems.forEach(function (item) {\n    const itemKey = getItemKey(item.netsuiteItemId);\n    const quantity = Number(item.quantity);\n\n    if (!itemKey || isNaN(quantity) || quantity <= 0) {\n      invalidMatchedItems.push({\n        netsuiteItemId: item.netsuiteItemId,\n        quantity: item.quantity,\n        sku: item.sku,\n        title: item.title,\n        reason: 'Invalid netsuiteItemId or quantity'\n      });\n\n      return;\n    }\n\n    if (!buckets[itemKey]) {\n      buckets[itemKey] = {\n        itemKey: itemKey,\n        netsuiteItemIdNumber: Number(item.netsuiteItemId),\n        totalQuantity: 0,\n        remainingQuantity: 0,\n        matches: []\n      };\n    }\n\n    buckets[itemKey].totalQuantity += quantity;\n    buckets[itemKey].remainingQuantity += quantity;\n\n    buckets[itemKey].matches.push({\n      netsuiteItemId: item.netsuiteItemId,\n      quantity: item.quantity,\n      quantityNumber: quantity,\n      sku: item.sku,\n      title: item.title\n    });\n  });\n\n  return {\n    buckets: buckets,\n    invalidMatchedItems: invalidMatchedItems\n  };\n}\n\nfunction buildAllocationPlan(returnAuthLines, buckets) {\n  const allocationPlan = [];\n\n  returnAuthLines.forEach(function (line) {\n    const itemKey = getItemKey(line.itemId);\n    const bucket = itemKey ? buckets[itemKey] : null;\n    const lineQuantity = Number(line.quantity);\n    const maxLineQuantity = !isNaN(lineQuantity) && lineQuantity > 0\n      ? lineQuantity\n      : 0;\n\n    const remainingBefore = bucket ? bucket.remainingQuantity : 0;\n    const allocatedQuantity = bucket\n      ? Math.min(bucket.remainingQuantity, maxLineQuantity)\n      : 0;\n\n    if (bucket) {\n      bucket.remainingQuantity -= allocatedQuantity;\n    }\n\n    allocationPlan.push({\n      line: line.line,\n      itemKey: itemKey,\n      itemId: line.itemId,\n      itemText: line.itemText,\n      lineUniqueKey: line.lineUniqueKey,\n      originalQuantity: line.quantity,\n      originalQuantityNumber: lineQuantity,\n      maxLineQuantity: maxLineQuantity,\n      matchedTotalQuantity: bucket ? bucket.totalQuantity : 0,\n      matchedRemainingBeforeAllocation: remainingBefore,\n      allocatedQuantity: allocatedQuantity,\n      matchedRemainingAfterAllocation: bucket ? bucket.remainingQuantity : 0,\n      foundMatch: !!bucket,\n      action: allocatedQuantity > 0 ? 'keep' : 'remove',\n      reason: bucket\n        ? allocatedQuantity > 0\n          ? 'Allocated refunded quantity to this return authorization line'\n          : 'Matched item refund quantity was already fully allocated to earlier lines'\n        : 'No matching netsuiteItemId found in rmaData.matched'\n    });\n  });\n\n  return allocationPlan;\n}\n\nfunction getUnallocatedMatchedQuantities(buckets) {\n  return Object.keys(buckets)\n    .map(function (itemKey) {\n      const bucket = buckets[itemKey];\n\n      return {\n        itemKey: itemKey,\n        netsuiteItemIdNumber: bucket.netsuiteItemIdNumber,\n        totalQuantity: bucket.totalQuantity,\n        remainingQuantity: bucket.remainingQuantity,\n        matches: bucket.matches\n      };\n    })\n    .filter(function (bucket) {\n      return bucket.remainingQuantity > 0;\n    });\n}\n\nfunction execute() {\n  const debugInfo = {\n    salesOrderId: salesOrder && salesOrder.id,\n    rmaExternalId: rmaData && rmaData.externalId,\n    shopifyOrderName: rmaData && rmaData.shopifyOrderName,\n\n    matchedItemsRaw: rmaData && rmaData.matched,\n    matchedItemsNormalized: [],\n    matchedQuantityBuckets: [],\n    invalidMatchedItems: [],\n    unallocatedMatchedQuantities: [],\n\n    salesOrderLineCount: null,\n    salesOrderLines: [],\n\n    returnAuthLineCountImmediatelyAfterTransform: null,\n    returnAuthLinesImmediatelyAfterTransform: [],\n\n    allocationPlan: [],\n    inspectedReturnAuthLines: [],\n    keptLines: [],\n    removedLines: []\n  };\n\n  try {\n    const matchedItems = (rmaData && rmaData.matched) || [];\n    debugInfo.matchedItemsNormalized = normalizeMatchedItems(matchedItems);\n\n    const salesOrderRec = record.load({\n      type: record.Type.SALES_ORDER,\n      id: Number(salesOrder.id),\n      isDynamic: false\n    });\n\n    debugInfo.salesOrderLineCount = salesOrderRec.getLineCount({\n      sublistId: 'item'\n    });\n\n    debugInfo.salesOrderLines = collectItemLines(salesOrderRec);\n\n    const returnAuthRec = record.transform({\n      fromType: record.Type.SALES_ORDER,\n      fromId: Number(salesOrder.id),\n      toType: record.Type.RETURN_AUTHORIZATION,\n      isDynamic: true\n    });\n\n    debugInfo.returnAuthLineCountImmediatelyAfterTransform =\n      returnAuthRec.getLineCount({\n        sublistId: 'item'\n      });\n\n    debugInfo.returnAuthLinesImmediatelyAfterTransform =\n      collectItemLines(returnAuthRec);\n\n    const matchedQuantityData = buildMatchedQuantityBuckets(matchedItems);\n    const matchedQuantityBuckets = matchedQuantityData.buckets;\n\n    debugInfo.invalidMatchedItems = matchedQuantityData.invalidMatchedItems;\n\n    debugInfo.allocationPlan = buildAllocationPlan(\n      debugInfo.returnAuthLinesImmediatelyAfterTransform,\n      matchedQuantityBuckets\n    );\n\n    debugInfo.matchedQuantityBuckets = Object.keys(matchedQuantityBuckets).map(\n      function (itemKey) {\n        const bucket = matchedQuantityBuckets[itemKey];\n\n        return {\n          itemKey: itemKey,\n          netsuiteItemIdNumber: bucket.netsuiteItemIdNumber,\n          totalQuantity: bucket.totalQuantity,\n          remainingQuantityAfterAllocationPlan: bucket.remainingQuantity,\n          matches: bucket.matches\n        };\n      }\n    );\n\n    debugInfo.unallocatedMatchedQuantities =\n      getUnallocatedMatchedQuantities(matchedQuantityBuckets);\n\n    returnAuthRec.setValue({\n      fieldId: 'externalid',\n      value: rmaData.externalId\n    });\n\n    returnAuthRec.setValue({\n      fieldId: 'custbody_shopify_ord_id',\n      value: rmaData.shopifyOrderName\n    });\n\n    returnAuthRec.setValue({\n      fieldId: 'memo',\n      value: 'Shopify Order ' + rmaData.shopifyOrderName\n    });\n\n    returnAuthRec.setValue({\n      fieldId: 'otherrefnum',\n      value: rmaData.shopifyOrderName\n    });\n\n    returnAuthRec.setValue({\n      fieldId: 'custbody_credit_reason_code',\n      value: 25\n    });\n\n    let hasValidLine = false;\n\n    const allocationByLine = {};\n\n    debugInfo.allocationPlan.forEach(function (allocation) {\n      allocationByLine[String(allocation.line)] = allocation;\n    });\n\n    const lineCount = returnAuthRec.getLineCount({\n      sublistId: 'item'\n    });\n\n    for (let i = lineCount - 1; i >= 0; i--) {\n      const allocation = allocationByLine[String(i)] || {\n        line: i,\n        allocatedQuantity: 0,\n        action: 'remove',\n        reason: 'No allocation plan found for this return authorization line'\n      };\n\n      const itemId = returnAuthRec.getSublistValue({\n        sublistId: 'item',\n        fieldId: 'item',\n        line: i\n      });\n\n      const lineDebug = {\n        line: i,\n        returnAuthItemId: itemId,\n        returnAuthItemIdNumber: Number(itemId),\n        returnAuthItemText: safeGetSublistText(returnAuthRec, 'item', 'item', i),\n        returnAuthLineUniqueKey: safeGetSublistValue(\n          returnAuthRec,\n          'item',\n          'lineuniquekey',\n          i\n        ),\n        returnAuthOriginalQuantity: safeGetSublistValue(\n          returnAuthRec,\n          'item',\n          'quantity',\n          i\n        ),\n        foundMatch: allocation.foundMatch || false,\n        matchedTotalQuantity: allocation.matchedTotalQuantity || 0,\n        matchedRemainingBeforeAllocation:\n          allocation.matchedRemainingBeforeAllocation || 0,\n        allocatedQuantity: allocation.allocatedQuantity || 0,\n        matchedRemainingAfterAllocation:\n          allocation.matchedRemainingAfterAllocation || 0,\n        action: allocation.action,\n        reason: allocation.reason\n      };\n\n      debugInfo.inspectedReturnAuthLines.push(lineDebug);\n\n      if (!allocation.allocatedQuantity || allocation.allocatedQuantity <= 0) {\n        lineDebug.action = 'removed';\n\n        debugInfo.removedLines.push(lineDebug);\n\n        returnAuthRec.removeLine({\n          sublistId: 'item',\n          line: i,\n          ignoreRecalc: true\n        });\n\n        continue;\n      }\n\n      returnAuthRec.selectLine({\n        sublistId: 'item',\n        line: i\n      });\n\n      returnAuthRec.setCurrentSublistValue({\n        sublistId: 'item',\n        fieldId: 'quantity',\n        value: Number(allocation.allocatedQuantity)\n      });\n\n      returnAuthRec.commitLine({\n        sublistId: 'item'\n      });\n\n      lineDebug.action = 'kept';\n      lineDebug.finalQuantity = Number(allocation.allocatedQuantity);\n\n      debugInfo.keptLines.push(lineDebug);\n\n      hasValidLine = true;\n    }\n\n    if (!hasValidLine) {\n      throw new Error(\n        'No valid refunded item lines were found for Shopify order ' +\n          rmaData.shopifyOrderName +\n          '. Debug summary: salesOrderLineCount=' +\n          debugInfo.salesOrderLineCount +\n          ', returnAuthLineCountImmediatelyAfterTransform=' +\n          debugInfo.returnAuthLineCountImmediatelyAfterTransform +\n          ', matchedItemsCount=' +\n          matchedItems.length +\n          ', keptLinesCount=' +\n          debugInfo.keptLines.length +\n          ', removedLinesCount=' +\n          debugInfo.removedLines.length +\n          ', unallocatedMatchedQuantitiesCount=' +\n          debugInfo.unallocatedMatchedQuantities.length\n      );\n    }\n\n    if (debugInfo.unallocatedMatchedQuantities.length > 0) {\n      throw new Error(\n        'Could not allocate the full refunded quantity to return authorization lines for Shopify order ' +\n          rmaData.shopifyOrderName +\n          '. Debug summary: salesOrderLineCount=' +\n          debugInfo.salesOrderLineCount +\n          ', returnAuthLineCountImmediatelyAfterTransform=' +\n          debugInfo.returnAuthLineCountImmediatelyAfterTransform +\n          ', matchedItemsCount=' +\n          matchedItems.length +\n          ', keptLinesCount=' +\n          debugInfo.keptLines.length +\n          ', removedLinesCount=' +\n          debugInfo.removedLines.length +\n          ', unallocatedMatchedQuantitiesCount=' +\n          debugInfo.unallocatedMatchedQuantities.length\n      );\n    }\n\n    const returnAuthId = returnAuthRec.save();\n\n    return {\n      success: true,\n      id: returnAuthId,\n      externalId: rmaData.externalId,\n      debug: debugInfo\n    };\n  } catch (error) {\n    return {\n      success: false,\n      message: error.message,\n      stack: error.stack,\n      errorName: error.name,\n      debug: debugInfo\n    };\n  }\n}\n\nexecute();\n"
+    },
+    {
+      "name": "If/Else - If Success = true",
+      "type": "conditional",
+      "results": 1,
+      "condition": "[Step 16: input[0].success] = true",
+      "stepNumber": 17
+    },
+    {
+      "code": "const rmaData = input['map4QBZ'][0];\nconst rma = input['netsuiteExecuteCustomCodeJSKT'][0];\nconst wfArguments = input['workflowArguments'];\nconst accountId = wfArguments?.accountID || '{{NETSUITE_ACCOUNT_ID}}';\nconst rmaUrl = `https://${accountId}.app.netsuite.com/app/accounting/transactions/rtnauth.nl?id=${rma.id}`;\n\nreturn [{\n  to: 'bruno@mindcloud.co, jjones@lionel.com, AMiller@lionel.com',\n  subject: `[${wfArguments?.storeName}] NetSuite RMA created for Shopify order ${rmaData?.shopifyOrderName}`,\n  body: `A NetSuite RMA has been created for Shopify order ${rmaData?.shopifyOrderName}.\\n\\nRMA ID: ${rma.id}\\nRMA Link: ${rmaUrl}\\nShopify Order ID: ${rmaData.shopifyOrderId}\\nShopify Refund ID: ${rmaData.refundId}`,\n  rmaUrl\n}];",
+      "name": "Map - Map - RMA Notification",
+      "type": "map",
+      "input": "Step 14, Step 16",
+      "results": 1,
+      "stepNumber": 18
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "continue"
+        },
+        {
+          "label": "Log Type",
+          "value": "info"
+        },
+        {
+          "label": "Send Email",
+          "value": "Yes"
+        },
+        {
+          "label": "Email To",
+          "value": "[workflowArguments: input[0].storePersonEmail]"
+        },
+        {
+          "label": "Email Subject",
+          "value": "[Step 18: input[0].subject]"
+        },
+        {
+          "label": "Email Body",
+          "value": "[Step 18: input[0].body]"
+        }
+      ],
+      "name": "Flow Control - Continue, send email",
+      "type": "action",
+      "stepNumber": 19
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "doNothing"
+        },
+        {
+          "label": "Email To",
+          "value": "[Step 1: input[0].emailRecipients]"
+        },
+        {
+          "label": "Emit Log",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Type",
+          "value": "warning"
+        },
+        {
+          "label": "Email Body",
+          "value": "Hello,\n\nThis is an automated notification. The RMA could not..."
+        },
+        {
+          "label": "Send Email",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Message",
+          "value": "[Failed] RMA creation failed for "
+        },
+        {
+          "label": "Email Subject",
+          "value": "["
+        }
+      ],
+      "name": "Flow Control - Skip - RMA Creation Failed",
+      "type": "action",
+      "stepNumber": 20
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "continue"
+        },
+        {
+          "label": "Emit Log",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Type",
+          "value": "info"
+        },
+        {
+          "label": "Log Message",
+          "value": "[NetSuite] Skipped RMA creation — existing Return Authorizat..."
+        }
+      ],
+      "name": "Flow Control - Skip - Existing RMA Found",
+      "type": "action",
+      "stepNumber": 21
+    },
+    {
+      "args": [
+        {
+          "label": "Action",
+          "value": "doNothing"
+        },
+        {
+          "label": "Emit Log",
+          "value": "Yes"
+        },
+        {
+          "label": "Log Type",
+          "value": "warning"
+        },
+        {
+          "label": "Log Message",
+          "value": "[Skipped] "
+        },
+        {
+          "label": "Email To",
+          "value": "[Step 1: input[0].emailRecipients]"
+        },
+        {
+          "label": "Email Body",
+          "value": "Hello,\n\nThis is an automated notification. A Shopify order w..."
+        },
+        {
+          "label": "Send Email",
+          "value": "Yes"
+        },
+        {
+          "label": "Email Subject",
+          "value": "["
+        }
+      ],
+      "name": "Flow Control - Skip - Sales Order Not Found or Status Ineligible",
+      "type": "action",
+      "stepNumber": 22
+    }
+  ],
+  "triggers": [
+    {
+      "name": "Schedule - Schedule - Run every 15 minutes, daily",
+      "type": "schedule",
+      "message": "Schedule - Run every 15 minutes, daily",
+      "schedule": {
+        "days": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "mode": "interval",
+        "dayNames": [
+          "Sunday",
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday"
+        ],
+        "intervalMs": 900000
+      }
+    }
+  ],
+  "workflow": {
+    "id": "j4DTBcbgDpko",
+    "name": "Shopify to NetSuite - Refunds/Returns",
+    "version": "0.0.23",
+    "isActive": true,
+    "publishedOn": "2026-06-25T18:46:49.000Z"
+  }
+}

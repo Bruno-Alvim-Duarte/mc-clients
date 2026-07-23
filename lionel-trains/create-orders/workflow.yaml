@@ -494,6 +494,7 @@ steps:
           const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
           const NETSUITE_LOCATION_ID = wfArguments.locationID;
           const DEFAULT_CURRENCY_ID = 1;
+          const SHIP_METHOD_ID = Number(wfArguments.shipMethodID) || null;
       
           // -----------------------------
           // Helpers
@@ -986,6 +987,13 @@ steps:
       
           const shippingAmount = getShopifyShippingAmount(order);
       
+          if (SHIP_METHOD_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'shipmethod',
+              value: SHIP_METHOD_ID
+            });
+          }
+      
           if (shippingAmount > 0) {
             salesOrderRec.setValue({
               fieldId: 'shippingcost',
@@ -1012,6 +1020,7 @@ steps:
             discountAmount: discountAmount,
             discountLineAdded: discountLineAdded,
             shippingAmount,
+            shipMethodId: SHIP_METHOD_ID,
             isAmazonFbmOrder: isAmazonFbmOrder
           };
       
@@ -1070,6 +1079,13 @@ steps:
           function getShopifyNumericId(gid) {
               if (!gid) return null;
               return String(gid).split('/').pop();
+          }
+      
+          const NETSUITE_PERSON_NAME_MAX_LENGTH = 32;
+      
+          function truncatePersonName(value) {
+              if (!value) return '';
+              return String(value).slice(0, NETSUITE_PERSON_NAME_MAX_LENGTH);
           }
       
           function buildName(firstName, lastName, fallback) {
@@ -1249,19 +1265,21 @@ steps:
           const shopifyCustomerId = getShopifyNumericId(args.customerId || args.customer?.id);
           const shopifyOrderId = getShopifyNumericId(args.orderId || args.id);
       
-          const customerFirstName =
+          const customerFirstName = truncatePersonName(
               args.customerFirstName ||
               args.customer?.firstName ||
               billingAddress?.firstName ||
               shippingAddress?.firstName ||
-              '';
+              ''
+          );
       
-          const customerLastName =
+          const customerLastName = truncatePersonName(
               args.customerLastName ||
               args.customer?.lastName ||
               billingAddress?.lastName ||
               shippingAddress?.lastName ||
-              '';
+              ''
+          );
       
           const customerEmail =
               args.customerEmail ||
@@ -1579,6 +1597,7 @@ steps:
           const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
           const NETSUITE_LOCATION_ID = wfArguments.locationID;
           const DEFAULT_CURRENCY_ID = 1;
+          const SHIP_METHOD_ID = Number(wfArguments.shipMethodID) || null;
       
           // -----------------------------
           // Helpers
@@ -2069,6 +2088,13 @@ steps:
       
           const shippingAmount = getShopifyShippingAmount(order);
       
+          if (SHIP_METHOD_ID) {
+            salesOrderRec.setValue({
+              fieldId: 'shipmethod',
+              value: SHIP_METHOD_ID
+            });
+          }
+      
           if (shippingAmount > 0) {
             salesOrderRec.setValue({
               fieldId: 'shippingcost',
@@ -2095,6 +2121,7 @@ steps:
             discountAmount: discountAmount,
             discountLineAdded: discountLineAdded,
             shippingAmount,
+            shipMethodId: SHIP_METHOD_ID,
             isAmazonFbmOrder: isAmazonFbmOrder
           };
       

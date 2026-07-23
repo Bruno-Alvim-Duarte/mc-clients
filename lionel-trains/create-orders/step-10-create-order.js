@@ -1,7 +1,7 @@
 const order = ${JSON.stringify(input?.mapPOD2?.[0])};
 const matchedItemsResult = ${JSON.stringify(input?.netsuiteExecuteCustomCodeVLIS?.[0])};
 const customerResult = ${JSON.stringify(input?.netsuiteListCustomersO7B0?.[0])};
-const wfArguments = ${JSON.stringify(input?.workflowArguments)}
+const wfArguments = ${JSON.stringify(input?.workflowArguments)};
 
 function execute() {
   try {
@@ -16,25 +16,36 @@ function execute() {
     const NETSUITE_CONCORD_LOCATION_ID = NETSUITE_LOCATION_ID;
     const NETSUITE_AMAZON_LOCATION_ID = 152;
     const DEFAULT_CURRENCY_ID = 1;
-    const AMAZON_FBM_DELIVERY_DATE_FIELD_ID = 'custbody_amz_fbm_del_date';
+    const AMAZON_FBM_DELIVERY_DATE_FIELD_ID =
+      'custbody_amz_fbm_del_date';
     const SHIP_COMPLETE_FIELD_ID = 'shipcomplete';
-    const SHOPIFY_DISCOUNT_PERCENT_FIELD_ID = 'custbody_shopify_disc_pct';
+    const SHOPIFY_DISCOUNT_PERCENT_FIELD_ID =
+      'custbody_shopify_disc_pct';
     const MONEY_PRECISION = 2;
     const PERCENT_PRECISION = 2;
+
     const SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES = {
-      'gid://shopify/Location/72788476094': NETSUITE_AMAZON_LOCATION_ID
+      'gid://shopify/Location/72788476094':
+        NETSUITE_AMAZON_LOCATION_ID
     };
+
+    const SHIP_METHOD_ID =
+      Number(wfArguments.shipMethodID) || null;
 
     // -----------------------------
     // Helpers
     // -----------------------------
     function getShopifyNumericId(gid) {
-      if (!gid) return null;
+      if (!gid) {
+        return null;
+      }
+
       return String(gid).split('/').pop();
     }
 
     function toNumber(value, fallback) {
       const num = Number(value);
+
       return isNaN(num) ? fallback : num;
     }
 
@@ -62,9 +73,11 @@ function execute() {
       }
 
       if (Array.isArray(value.edges)) {
-        return value.edges.map(function (edge) {
-          return edge?.node;
-        }).filter(Boolean);
+        return value.edges
+          .map(function (edge) {
+            return edge?.node;
+          })
+          .filter(Boolean);
       }
 
       if (Array.isArray(value.nodes)) {
@@ -86,7 +99,9 @@ function execute() {
 
       if (numericValue) {
         keys.push(numericValue);
-        keys.push('gid://shopify/LineItem/' + numericValue);
+        keys.push(
+          'gid://shopify/LineItem/' + numericValue
+        );
       }
     }
 
@@ -106,19 +121,29 @@ function execute() {
     function buildFulfillmentOrderLineLocationMap(order) {
       const lineLocationMap = {};
 
-      normalizeConnection(order?.fulfillmentOrders).forEach(function (fulfillmentOrder) {
+      normalizeConnection(
+        order?.fulfillmentOrders
+      ).forEach(function (fulfillmentOrder) {
         const shopifyLocationId =
           fulfillmentOrder?.assignedLocation?.location?.id ||
           fulfillmentOrder?.assignedLocation?.locationId ||
           null;
-        const netsuiteLocationId = SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES[shopifyLocationId];
+
+        const netsuiteLocationId =
+          SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES[
+            shopifyLocationId
+          ];
 
         if (!netsuiteLocationId) {
           return;
         }
 
-        normalizeConnection(fulfillmentOrder?.lineItems).forEach(function (fulfillmentOrderLineItem) {
-          getLineItemKeys(fulfillmentOrderLineItem?.lineItem).forEach(function (key) {
+        normalizeConnection(
+          fulfillmentOrder?.lineItems
+        ).forEach(function (fulfillmentOrderLineItem) {
+          getLineItemKeys(
+            fulfillmentOrderLineItem?.lineItem
+          ).forEach(function (key) {
             lineLocationMap[key] = netsuiteLocationId;
           });
         });
@@ -127,7 +152,10 @@ function execute() {
       return lineLocationMap;
     }
 
-    function getLineLocationId(lineItem, fulfillmentOrderLineLocationMap) {
+    function getLineLocationId(
+      lineItem,
+      fulfillmentOrderLineLocationMap
+    ) {
       const keys = getLineItemKeys(lineItem);
 
       for (let i = 0; i < keys.length; i++) {
@@ -139,12 +167,24 @@ function execute() {
       return NETSUITE_LOCATION_ID;
     }
 
-    function hasFulfillmentOrderLocationOverride(fulfillmentOrderLineLocationMap) {
-      return Object.keys(fulfillmentOrderLineLocationMap).length > 0;
+    function hasFulfillmentOrderLocationOverride(
+      fulfillmentOrderLineLocationMap
+    ) {
+      return (
+        Object.keys(fulfillmentOrderLineLocationMap).length >
+        0
+      );
     }
 
-    function getShopifyOrderClassWithFulfillmentLocations(order, fulfillmentOrderLineLocationMap) {
-      if (hasFulfillmentOrderLocationOverride(fulfillmentOrderLineLocationMap)) {
+    function getShopifyOrderClassWithFulfillmentLocations(
+      order,
+      fulfillmentOrderLineLocationMap
+    ) {
+      if (
+        hasFulfillmentOrderLocationOverride(
+          fulfillmentOrderLineLocationMap
+        )
+      ) {
         return '1';
       }
 
@@ -152,7 +192,10 @@ function execute() {
     }
 
     function getSourceText(value) {
-      if (value === null || value === undefined) return '';
+      if (value === null || value === undefined) {
+        return '';
+      }
+
       return String(value).trim().toLowerCase();
     }
 
@@ -170,7 +213,9 @@ function execute() {
           return [
             getSourceText(attribute?.key),
             getSourceText(attribute?.value)
-          ].filter(Boolean).join(' ');
+          ]
+            .filter(Boolean)
+            .join(' ');
         })
         .filter(Boolean)
         .join(' ');
@@ -179,35 +224,75 @@ function execute() {
     function getShopifyOrderClass(order) {
       const sourceName = getOrderSourceName(order);
 
-      if (sourceName === '71323942913') return '3';
-      if (sourceName === 'amazon') return '1';
-      if (sourceName === 'ebay') return '2';
+      if (sourceName === '71323942913') {
+        return '3';
+      }
 
-      const customAttributesText = getCustomAttributesText(order);
+      if (sourceName === 'amazon') {
+        return '1';
+      }
 
-      if (customAttributesText.indexOf('walmart') !== -1) return '3';
-      if (customAttributesText.indexOf('amazon') !== -1) return '1';
-      if (customAttributesText.indexOf('ebay') !== -1) return '2';
+      if (sourceName === 'ebay') {
+        return '2';
+      }
+
+      const customAttributesText =
+        getCustomAttributesText(order);
+
+      if (
+        customAttributesText.indexOf('walmart') !== -1
+      ) {
+        return '3';
+      }
+
+      if (
+        customAttributesText.indexOf('amazon') !== -1
+      ) {
+        return '1';
+      }
+
+      if (
+        customAttributesText.indexOf('ebay') !== -1
+      ) {
+        return '2';
+      }
 
       return '4';
     }
 
-    function orderHasOpenLineFromNetsuiteLocation(lineItems, fulfillmentOrderLineLocationMap, locationId) {
-      const openLineItems = lineItems.filter(function (lineItem) {
-        return getLineQuantities(lineItem).pendingQuantity > 0;
-      });
+    function orderHasOpenLineFromNetsuiteLocation(
+      lineItems,
+      fulfillmentOrderLineLocationMap,
+      locationId
+    ) {
+      const openLineItems = lineItems.filter(
+        function (lineItem) {
+          return (
+            getLineQuantities(lineItem).pendingQuantity > 0
+          );
+        }
+      );
 
       if (!locationId || !openLineItems.length) {
         return false;
       }
 
       return openLineItems.some(function (lineItem) {
-        return Number(getLineLocationId(lineItem, fulfillmentOrderLineLocationMap)) === Number(locationId);
+        return (
+          Number(
+            getLineLocationId(
+              lineItem,
+              fulfillmentOrderLineLocationMap
+            )
+          ) === Number(locationId)
+        );
       });
     }
 
     function parseShopifyDateToNetSuiteDate(value) {
-      if (!value) return null;
+      if (!value) {
+        return null;
+      }
 
       const date = new Date(value);
 
@@ -219,29 +304,50 @@ function execute() {
     }
 
     function subtractUtcDays(date, days) {
-      if (!date) return null;
+      if (!date) {
+        return null;
+      }
 
       const adjustedDate = new Date(date.getTime());
-      adjustedDate.setUTCDate(adjustedDate.getUTCDate() - days);
+
+      adjustedDate.setUTCDate(
+        adjustedDate.getUTCDate() - days
+      );
+
       adjustedDate.setUTCHours(12, 0, 0, 0);
 
       return adjustedDate;
     }
 
     function getAmazonLatestDeliveryDate(order) {
-      const amazonLatestDeliveryDateAttribute = (order?.customAttributes || []).find(function (attribute) {
-        return attribute?.key === 'Amazon Latest Delivery Date';
+      const amazonLatestDeliveryDateAttribute = (
+        order?.customAttributes || []
+      ).find(function (attribute) {
+        return (
+          attribute?.key ===
+          'Amazon Latest Delivery Date'
+        );
       });
 
       return subtractUtcDays(
-        parseShopifyDateToNetSuiteDate(amazonLatestDeliveryDateAttribute?.value),
+        parseShopifyDateToNetSuiteDate(
+          amazonLatestDeliveryDateAttribute?.value
+        ),
         1
       );
     }
 
     function getAmount(value) {
-      if (value === null || value === undefined || value === '') return null;
+      if (
+        value === null ||
+        value === undefined ||
+        value === ''
+      ) {
+        return null;
+      }
+
       const amount = Number(value);
+
       return isNaN(amount) ? null : amount;
     }
 
@@ -249,7 +355,11 @@ function execute() {
       for (let i = 0; i < values.length; i++) {
         const value = values[i];
 
-        if (value === null || value === undefined || value === '') {
+        if (
+          value === null ||
+          value === undefined ||
+          value === ''
+        ) {
           continue;
         }
 
@@ -264,7 +374,11 @@ function execute() {
     }
 
     function getLineQuantities(lineItem) {
-      const orderedQuantity = Math.max(toNumber(lineItem.quantity, 1), 0);
+      const orderedQuantity = Math.max(
+        toNumber(lineItem.quantity, 1),
+        0
+      );
+
       const rawFulfillableQuantity = getFirstNumber([
         lineItem.fulfillableQuantity,
         lineItem.fulfillable_quantity,
@@ -275,32 +389,42 @@ function execute() {
       const pendingQuantity =
         rawFulfillableQuantity === null
           ? orderedQuantity
-          : Math.min(Math.max(rawFulfillableQuantity, 0), orderedQuantity);
+          : Math.min(
+              Math.max(rawFulfillableQuantity, 0),
+              orderedQuantity
+            );
 
       return {
         orderedQuantity: orderedQuantity,
         pendingQuantity: pendingQuantity,
-        alreadyFulfilledQuantity: Math.max(orderedQuantity - pendingQuantity, 0)
+        alreadyFulfilledQuantity: Math.max(
+          orderedQuantity - pendingQuantity,
+          0
+        )
       };
     }
 
     function hasLineFulfillableQuantity(lineItem) {
-      return getFirstNumber([
-        lineItem.fulfillableQuantity,
-        lineItem.fulfillable_quantity,
-        lineItem.remainingQuantity,
-        lineItem.remaining_quantity
-      ]) !== null;
+      return (
+        getFirstNumber([
+          lineItem.fulfillableQuantity,
+          lineItem.fulfillable_quantity,
+          lineItem.remainingQuantity,
+          lineItem.remaining_quantity
+        ]) !== null
+      );
     }
 
     function orderMayBePartiallyFulfilled(order) {
       const fulfillmentStatus = getSourceText(
         order?.fulfillmentStatus ||
-        order?.displayFulfillmentStatus ||
-        ''
+          order?.displayFulfillmentStatus ||
+          ''
       );
 
-      return fulfillmentStatus.indexOf('partial') !== -1;
+      return (
+        fulfillmentStatus.indexOf('partial') !== -1
+      );
     }
 
     function buildItemMap(matchedItemsResult) {
@@ -312,11 +436,17 @@ function execute() {
         [];
 
       matchedLineItems.forEach(function (line) {
-        if (!line?.sku) return;
+        if (!line?.sku) {
+          return;
+        }
 
         map[String(line.sku).trim()] = {
           sku: String(line.sku).trim(),
-          netsuiteItemId: line.netsuiteItemId || line.internalId || line.itemId || null,
+          netsuiteItemId:
+            line.netsuiteItemId ||
+            line.internalId ||
+            line.itemId ||
+            null,
           netsuiteItem: line.netsuiteItem || null
         };
       });
@@ -334,55 +464,192 @@ function execute() {
       );
     }
 
-
     function getShopifyDiscountAmount(order) {
-      return getAmount(
-        order?.currentTotalDiscountsSet?.shopMoney?.amount ||
-        order?.totalDiscountsSet?.shopMoney?.amount ||
-        0
-      ) || 0;
+      return (
+        getAmount(
+          order?.currentTotalDiscountsSet?.shopMoney
+            ?.amount ||
+            order?.totalDiscountsSet?.shopMoney?.amount ||
+            0
+        ) || 0
+      );
     }
 
     function roundNumber(value, precision) {
       const factor = Math.pow(10, precision);
-      return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+
+      return (
+        Math.round(
+          (Number(value) + Number.EPSILON) * factor
+        ) / factor
+      );
     }
 
-    function getSalesOrderProductSubtotal(salesOrderRec) {
+    function getShopifyOrderTotalAmount(order) {
+      return getFirstNumber([
+        order?.currentTotalPriceSet?.shopMoney?.amount,
+        order?.totalPriceSet?.shopMoney?.amount,
+        order?.currentTotalPrice,
+        order?.totalPrice,
+        order?.total_price,
+        order?.totalAmount,
+        order?.total
+      ]);
+    }
+
+    function getLineItemsOriginalSubtotal(lineItems) {
+      return roundNumber(
+        lineItems.reduce(function (subtotal, lineItem) {
+          const unitPrice =
+            getAmount(lineItem.originalUnitPrice) || 0;
+
+          const quantity =
+            getLineQuantities(lineItem).orderedQuantity;
+
+          return subtotal + unitPrice * quantity;
+        }, 0),
+        MONEY_PRECISION
+      );
+    }
+
+    function getLineItemsDiscountedSubtotal(lineItems) {
+      let hasDiscountedTotal = false;
+
+      const subtotal = lineItems.reduce(
+        function (sum, lineItem) {
+          const discountedTotal = getAmount(
+            lineItem.discountedTotal
+          );
+
+          if (discountedTotal === null) {
+            return sum;
+          }
+
+          hasDiscountedTotal = true;
+
+          return sum + discountedTotal;
+        },
+        0
+      );
+
+      return hasDiscountedTotal
+        ? roundNumber(subtotal, MONEY_PRECISION)
+        : null;
+    }
+
+    function isZeroDollarShopifyOrder(
+      order,
+      lineItems,
+      discountAmount,
+      shippingAmount
+    ) {
+      const orderTotal =
+        getShopifyOrderTotalAmount(order);
+
+      if (orderTotal !== null) {
+        return (
+          roundNumber(orderTotal, MONEY_PRECISION) === 0
+        );
+      }
+
+      const originalSubtotal =
+        getLineItemsOriginalSubtotal(lineItems);
+
+      if (
+        roundNumber(
+          originalSubtotal +
+            shippingAmount -
+            discountAmount,
+          MONEY_PRECISION
+        ) === 0
+      ) {
+        return true;
+      }
+
+      const discountedSubtotal =
+        getLineItemsDiscountedSubtotal(lineItems);
+
+      if (
+        discountAmount > 0 &&
+        discountedSubtotal !== null
+      ) {
+        return (
+          roundNumber(
+            discountedSubtotal + shippingAmount,
+            MONEY_PRECISION
+          ) === 0
+        );
+      }
+
+      return false;
+    }
+
+    function getSalesOrderProductSubtotal(
+      salesOrderRec
+    ) {
       let subtotal = 0;
-      const lineCount = salesOrderRec.getLineCount({ sublistId: 'item' });
+
+      const lineCount = salesOrderRec.getLineCount({
+        sublistId: 'item'
+      });
 
       for (let i = 0; i < lineCount; i++) {
-        const amount = getAmount(salesOrderRec.getSublistValue({
-          sublistId: 'item',
-          fieldId: 'amount',
-          line: i
-        })) || 0;
+        const amount =
+          getAmount(
+            salesOrderRec.getSublistValue({
+              sublistId: 'item',
+              fieldId: 'amount',
+              line: i
+            })
+          ) || 0;
 
         if (amount > 0) {
           subtotal += amount;
         }
       }
 
-      return roundNumber(subtotal, MONEY_PRECISION);
+      return roundNumber(
+        subtotal,
+        MONEY_PRECISION
+      );
     }
 
-    function getShopifyDiscountPercent(productSubtotal, discountAmount) {
-      if (!productSubtotal || productSubtotal <= 0) return 0;
-      if (!discountAmount || discountAmount <= 0) return 0;
+    function getShopifyDiscountPercent(
+      productSubtotal,
+      discountAmount
+    ) {
+      if (!productSubtotal || productSubtotal <= 0) {
+        return 0;
+      }
+
+      if (!discountAmount || discountAmount <= 0) {
+        return 0;
+      }
 
       return roundNumber(
-        Math.abs(discountAmount) / productSubtotal * 100,
+        (Math.abs(discountAmount) /
+          productSubtotal) *
+          100,
         PERCENT_PRECISION
       );
     }
 
-    function setShopifyDiscountPercent(salesOrderRec, discountAmount) {
-      const productSubtotal = getSalesOrderProductSubtotal(salesOrderRec);
-      const discountPercent = getShopifyDiscountPercent(productSubtotal, discountAmount);
+    function setShopifyDiscountPercent(
+      salesOrderRec,
+      discountAmount
+    ) {
+      const productSubtotal =
+        getSalesOrderProductSubtotal(salesOrderRec);
+
+      const discountPercent =
+        getShopifyDiscountPercent(
+          productSubtotal,
+          discountAmount
+        );
 
       salesOrderRec.setValue({
-        fieldId: SHOPIFY_DISCOUNT_PERCENT_FIELD_ID,
+        fieldId:
+          SHOPIFY_DISCOUNT_PERCENT_FIELD_ID,
         value: discountPercent
       });
 
@@ -395,14 +662,19 @@ function execute() {
     function setNonTaxableItemLine(salesOrderRec) {
       salesOrderRec.setCurrentSublistValue({
         sublistId: 'item',
-        fieldId: 'isTaxable',
+        fieldId: 'istaxable',
         value: false,
         forceSyncSourcing: true
       });
     }
 
-    function addShopifyDiscountLine(salesOrderRec, discountAmount, isAmazonFbmOrder) {
-      const SHOPIFY_DISCOUNT_ITEM_ID = wfArguments.discountID
+    function addShopifyDiscountLine(
+      salesOrderRec,
+      discountAmount,
+      isAmazonFbmOrder
+    ) {
+      const SHOPIFY_DISCOUNT_ITEM_ID =
+        wfArguments.discountID;
 
       if (!discountAmount || discountAmount <= 0) {
         return false;
@@ -458,21 +730,37 @@ function execute() {
     }
 
     function getShopifyShippingAmount(order) {
-      return getAmount(
-        order?.shippingAmount ||
-        order?.totalShippingPrice ||
-        order?.totalShippingPriceSet?.shopMoney?.amount ||
-        0
-      ) || 0;
+      return (
+        getAmount(
+          order?.shippingAmount ||
+            order?.totalShippingPrice ||
+            order?.totalShippingPriceSet?.shopMoney
+              ?.amount ||
+            0
+        ) || 0
+      );
     }
 
-    function addSalesOrderItemLine(salesOrderRec, lineItem, matchedItem, quantity, rate, isClosed, descriptionSuffix, lineLocationId) {
+    function addSalesOrderItemLine(
+      salesOrderRec,
+      lineItem,
+      matchedItem,
+      quantity,
+      rate,
+      isClosed,
+      descriptionSuffix,
+      lineLocationId
+    ) {
       if (!quantity || quantity <= 0) {
         return false;
       }
 
-      const sku = String(lineItem.sku || '').trim();
-      const targetLocationId = lineLocationId || NETSUITE_LOCATION_ID;
+      const sku = String(
+        lineItem.sku || ''
+      ).trim();
+
+      const targetLocationId =
+        lineLocationId || NETSUITE_LOCATION_ID;
 
       salesOrderRec.selectNewLine({
         sublistId: 'item'
@@ -481,7 +769,9 @@ function execute() {
       salesOrderRec.setCurrentSublistValue({
         sublistId: 'item',
         fieldId: 'item',
-        value: Number(matchedItem.netsuiteItemId),
+        value: Number(
+          matchedItem.netsuiteItemId
+        ),
         forceSyncSourcing: true
       });
 
@@ -532,7 +822,12 @@ function execute() {
       salesOrderRec.setCurrentSublistValue({
         sublistId: 'item',
         fieldId: 'description',
-        value: [lineItem.title || sku, descriptionSuffix].filter(Boolean).join(' - ')
+        value: [
+          lineItem.title || sku,
+          descriptionSuffix
+        ]
+          .filter(Boolean)
+          .join(' - ')
       });
 
       if (isClosed) {
@@ -551,7 +846,9 @@ function execute() {
       return true;
     }
 
-    function setSalesOrderHeaderLocation(salesOrderRec) {
+    function setSalesOrderHeaderLocation(
+      salesOrderRec
+    ) {
       if (!NETSUITE_LOCATION_ID) {
         return;
       }
@@ -563,41 +860,108 @@ function execute() {
       });
     }
 
-    function forceSavedSalesOrderHeaderLocation(salesOrderId) {
+    function waitMilliseconds(milliseconds) {
+      const start = new Date().getTime();
+
+      while (
+        new Date().getTime() - start <
+        milliseconds
+      ) {
+        // Intentional wait
+      }
+    }
+
+    function forceSavedSalesOrderHeaderLocationWithRetry(
+      salesOrderId,
+      maxRetries,
+      delayMilliseconds
+    ) {
       if (!NETSUITE_LOCATION_ID) {
         return false;
       }
 
-      record.submitFields({
-        type: 'salesorder',
-        id: salesOrderId,
-        values: {
-          location: NETSUITE_LOCATION_ID
-        },
-        options: {
-          enableSourcing: false,
-          ignoreMandatoryFields: true
-        }
-      });
+      let lastError;
 
-      return true;
+      for (
+        let attempt = 1;
+        attempt <= maxRetries;
+        attempt++
+      ) {
+        try {
+          record.submitFields({
+            type: 'salesorder',
+            id: salesOrderId,
+            values: {
+              location: NETSUITE_LOCATION_ID
+            },
+            options: {
+              enableSourcing: false,
+              ignoreMandatoryFields: true
+            }
+          });
+
+          return true;
+        } catch (e) {
+          lastError = e;
+
+          const isRecordChanged =
+            e.name ===
+              'RCRD_HAS_BEEN_CHANGED' ||
+            String(e.message || '').indexOf(
+              'Record has been changed'
+            ) !== -1;
+
+          if (
+            !isRecordChanged ||
+            attempt === maxRetries
+          ) {
+            throw e;
+          }
+
+          waitMilliseconds(
+            delayMilliseconds || 3000
+          );
+        }
+      }
+
+      throw lastError;
     }
 
-    function setTransactionAddress(salesOrderRec, fieldId, addressData) {
-      if (!addressData) return;
+    function setTransactionAddress(
+      salesOrderRec,
+      fieldId,
+      addressData
+    ) {
+      if (!addressData) {
+        return;
+      }
 
-      const addressSubrecord = salesOrderRec.getSubrecord({
-        fieldId: fieldId
-      });
+      const addressSubrecord =
+        salesOrderRec.getSubrecord({
+          fieldId: fieldId
+        });
 
       const addressee =
         addressData.name ||
-        [addressData.firstName, addressData.lastName].filter(Boolean).join(' ').trim();
+        [
+          addressData.firstName,
+          addressData.lastName
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
 
-      if (addressData.countryCodeV2 || addressData.countryCode || addressData.country) {
+      if (
+        addressData.countryCodeV2 ||
+        addressData.countryCode ||
+        addressData.country
+      ) {
         addressSubrecord.setValue({
           fieldId: 'country',
-          value: addressData.countryCodeV2 || addressData.countryCode || addressData.country
+          value:
+            addressData.countryCodeV2 ||
+            addressData.countryCode ||
+            addressData.country
         });
       }
 
@@ -636,10 +1000,15 @@ function execute() {
         });
       }
 
-      if (addressData.provinceCode || addressData.province) {
+      if (
+        addressData.provinceCode ||
+        addressData.province
+      ) {
         addressSubrecord.setValue({
           fieldId: 'state',
-          value: addressData.provinceCode || addressData.province
+          value:
+            addressData.provinceCode ||
+            addressData.province
         });
       }
 
@@ -661,26 +1030,60 @@ function execute() {
     // -----------------------------
     // Source data
     // -----------------------------
-    const shopifyOrderId = getShopifyNumericId(order?.orderNumber);
+    const shopifyOrderId =
+      getShopifyNumericId(order?.orderNumber);
+
     const shopifyOrderName = order?.name;
     const lineItems = getLineItems(order);
-    const itemMap = buildItemMap(matchedItemsResult);
-    const fulfillmentOrderLineLocationMap = buildFulfillmentOrderLineLocationMap(order);
-    const shopifyOrderClass = getShopifyOrderClassWithFulfillmentLocations(order, fulfillmentOrderLineLocationMap);
-    const originatedFromAmazon = getShopifyOrderClass(order) === '1';
-    const isAmazonFbmOrder = shopifyOrderClass === '1';
-    const hasConcordFulfillmentLine = orderHasOpenLineFromNetsuiteLocation(lineItems, fulfillmentOrderLineLocationMap, NETSUITE_CONCORD_LOCATION_ID);
-    const shouldSetAmazonFbmHeaderFields = originatedFromAmazon && hasConcordFulfillmentLine;
-    const amazonFbmDeliveryDate = shouldSetAmazonFbmHeaderFields ? getAmazonLatestDeliveryDate(order) : null;
-    const shopifyCreatedAt = order?.createdAt;
-    const transactionDate = parseShopifyDateToNetSuiteDate(shopifyCreatedAt);
+    const itemMap =
+      buildItemMap(matchedItemsResult);
 
-    const customerId = getCustomerId(customerResult);
+    const fulfillmentOrderLineLocationMap =
+      buildFulfillmentOrderLineLocationMap(order);
+
+    const shopifyOrderClass =
+      getShopifyOrderClassWithFulfillmentLocations(
+        order,
+        fulfillmentOrderLineLocationMap
+      );
+
+    const originatedFromAmazon =
+      getShopifyOrderClass(order) === '1';
+
+    const isAmazonFbmOrder =
+      shopifyOrderClass === '1';
+
+    const hasConcordFulfillmentLine =
+      orderHasOpenLineFromNetsuiteLocation(
+        lineItems,
+        fulfillmentOrderLineLocationMap,
+        NETSUITE_CONCORD_LOCATION_ID
+      );
+
+    const shouldSetAmazonFbmHeaderFields =
+      originatedFromAmazon &&
+      hasConcordFulfillmentLine;
+
+    const amazonFbmDeliveryDate =
+      shouldSetAmazonFbmHeaderFields
+        ? getAmazonLatestDeliveryDate(order)
+        : null;
+
+    const shopifyCreatedAt = order?.createdAt;
+
+    const transactionDate =
+      parseShopifyDateToNetSuiteDate(
+        shopifyCreatedAt
+      );
+
+    const customerId =
+      getCustomerId(customerResult);
 
     if (!customerId) {
       return {
         success: false,
-        message: 'Missing NetSuite customer internal ID. Create or find the customer before creating the Sales Order.',
+        message:
+          'Missing NetSuite customer internal ID. Create or find the customer before creating the Sales Order.',
         customerResult: customerResult
       };
     }
@@ -688,19 +1091,28 @@ function execute() {
     if (!lineItems.length) {
       return {
         success: false,
-        message: 'No Shopify lineItems found on order.',
+        message:
+          'No Shopify lineItems found on order.',
         orderId: order?.id,
         orderName: order?.name
       };
     }
 
-    if (orderMayBePartiallyFulfilled(order) && !lineItems.some(hasLineFulfillableQuantity)) {
+    if (
+      orderMayBePartiallyFulfilled(order) &&
+      !lineItems.some(
+        hasLineFulfillableQuantity
+      )
+    ) {
       return {
         success: false,
-        message: 'Shopify order is partially fulfilled, but line items do not include fulfillableQuantity/remainingQuantity. Update the Shopify query and mapPOD2 mapping before creating this Sales Order.',
+        message:
+          'Shopify order is partially fulfilled, but line items do not include fulfillableQuantity/remainingQuantity. Update the Shopify query and mapPOD2 mapping before creating this Sales Order.',
         orderId: order?.id,
         orderName: order?.name,
-        fulfillmentStatus: order?.fulfillmentStatus || order?.displayFulfillmentStatus
+        fulfillmentStatus:
+          order?.fulfillmentStatus ||
+          order?.displayFulfillmentStatus
       };
     }
 
@@ -709,7 +1121,11 @@ function execute() {
     // -----------------------------
     const salesOrderRec = record.create({
       type: 'salesorder',
-      isDynamic: true
+      isDynamic: true,
+      defaultValues: {
+        entity: Number(customerId),
+        subsidiary: NETSUITE_SUBSIDIARY_ID
+      }
     });
 
     // Custom form should be one of the first fields if used
@@ -721,20 +1137,10 @@ function execute() {
     }
 
     salesOrderRec.setValue({
-      fieldId: 'entity',
-      value: Number(customerId)
-    });
-
-    salesOrderRec.setValue({
-      fieldId: 'subsidiary',
-      value: NETSUITE_SUBSIDIARY_ID
-    });
-
-    salesOrderRec.setValue({
       fieldId: 'csegdivision',
       value: NETSUITE_CSEG_DIVISION
     });
-    
+
     if (transactionDate) {
       salesOrderRec.setValue({
         fieldId: 'trandate',
@@ -765,7 +1171,13 @@ function execute() {
 
     salesOrderRec.setValue({
       fieldId: 'memo',
-      value: 'Shopify Order ' + (shopifyOrderName || shopifyOrderId || '')
+      value:
+        'Shopify Order ' +
+        (
+          shopifyOrderName ||
+          shopifyOrderId ||
+          ''
+        )
     });
 
     salesOrderRec.setValue({
@@ -791,27 +1203,35 @@ function execute() {
 
       if (amazonFbmDeliveryDate) {
         salesOrderRec.setValue({
-          fieldId: AMAZON_FBM_DELIVERY_DATE_FIELD_ID,
+          fieldId:
+            AMAZON_FBM_DELIVERY_DATE_FIELD_ID,
           value: amazonFbmDeliveryDate
         });
       }
     }
-    
-    //
-    // salesOrderRec.setValue({
-    //   fieldId: 'custbody_shopify_order_name',
-    //   value: shopifyOrderName
-    // });
+
+    salesOrderRec.setValue({
+      fieldId: 'department',
+      value: 34
+    });
 
     // -----------------------------
     // Addresses
     // -----------------------------
     if (order?.billingAddress) {
-      setTransactionAddress(salesOrderRec, 'billingaddress', order.billingAddress);
+      setTransactionAddress(
+        salesOrderRec,
+        'billingaddress',
+        order.billingAddress
+      );
     }
 
     if (order?.shippingAddress) {
-      setTransactionAddress(salesOrderRec, 'shippingaddress', order.shippingAddress);
+      setTransactionAddress(
+        salesOrderRec,
+        'shippingaddress',
+        order.shippingAddress
+      );
     }
 
     // -----------------------------
@@ -820,59 +1240,101 @@ function execute() {
     let createdOpenLineCount = 0;
     let createdClosedLineCount = 0;
 
+    const discountAmount =
+      getShopifyDiscountAmount(order);
+
+    const shippingAmount =
+      getShopifyShippingAmount(order);
+
+    const isZeroDollarOrder =
+      isZeroDollarShopifyOrder(
+        order,
+        lineItems,
+        discountAmount,
+        shippingAmount
+      );
+
+    const discountAmountForNetSuite =
+      isZeroDollarOrder
+        ? 0
+        : discountAmount;
+
     lineItems.forEach(function (lineItem) {
-      const sku = String(lineItem.sku || '').trim();
+      const sku = String(
+        lineItem.sku || ''
+      ).trim();
+
       const matchedItem = itemMap[sku];
 
       const unitPrice = getAmount(
         lineItem.originalUnitPrice
       );
 
-      const rate = unitPrice;
-      const quantities = getLineQuantities(lineItem);
-      const lineLocationId = getLineLocationId(lineItem, fulfillmentOrderLineLocationMap);
+      const rate = isZeroDollarOrder
+        ? 0
+        : unitPrice;
 
-      if (addSalesOrderItemLine(
-        salesOrderRec,
-        lineItem,
-        matchedItem,
-        quantities.alreadyFulfilledQuantity,
-        rate,
-        true,
-        'Already fulfilled in Shopify',
-        lineLocationId
-      )) {
+      const quantities =
+        getLineQuantities(lineItem);
+
+      const lineLocationId =
+        getLineLocationId(
+          lineItem,
+          fulfillmentOrderLineLocationMap
+        );
+
+      if (
+        addSalesOrderItemLine(
+          salesOrderRec,
+          lineItem,
+          matchedItem,
+          quantities.alreadyFulfilledQuantity,
+          rate,
+          true,
+          'Already fulfilled in Shopify',
+          lineLocationId
+        )
+      ) {
         createdClosedLineCount++;
       }
 
-      if (addSalesOrderItemLine(
-        salesOrderRec,
-        lineItem,
-        matchedItem,
-        quantities.pendingQuantity,
-        rate,
-        false,
-        quantities.alreadyFulfilledQuantity > 0 ? 'Pending fulfillment balance' : '',
-        lineLocationId
-      )) {
+      if (
+        addSalesOrderItemLine(
+          salesOrderRec,
+          lineItem,
+          matchedItem,
+          quantities.pendingQuantity,
+          rate,
+          false,
+          quantities.alreadyFulfilledQuantity > 0
+            ? 'Pending fulfillment balance'
+            : '',
+          lineLocationId
+        )
+      ) {
         createdOpenLineCount++;
       }
     });
 
-    const discountAmount = getShopifyDiscountAmount(order);
+    const discountLineAdded =
+      addShopifyDiscountLine(
+        salesOrderRec,
+        discountAmountForNetSuite,
+        isAmazonFbmOrder
+      );
 
-    const discountLineAdded = addShopifyDiscountLine(
-      salesOrderRec,
-      discountAmount,
-      isAmazonFbmOrder
-    );
+    const discountPercentData =
+      setShopifyDiscountPercent(
+        salesOrderRec,
+        discountAmountForNetSuite
+      );
 
-    const discountPercentData = setShopifyDiscountPercent(
-      salesOrderRec,
-      discountAmount
-    );
-
-    const shippingAmount = getShopifyShippingAmount(order);
+    if (SHIP_METHOD_ID) {
+      salesOrderRec.setValue({
+        fieldId: 'shipmethod',
+        value: SHIP_METHOD_ID
+      });
+    }
 
     if (shippingAmount > 0) {
       salesOrderRec.setValue({
@@ -881,40 +1343,67 @@ function execute() {
       });
     }
 
-    setSalesOrderHeaderLocation(salesOrderRec);
+    setSalesOrderHeaderLocation(
+      salesOrderRec
+    );
 
     // -----------------------------
     // Save
     // -----------------------------
-    const salesOrderId = salesOrderRec.save({
-      enableSourcing: true,
-      ignoreMandatoryFields: false
-    });
-    const headerLocationForced = forceSavedSalesOrderHeaderLocation(salesOrderId);
+    const salesOrderId =
+      salesOrderRec.save({
+        enableSourcing: true,
+        ignoreMandatoryFields: false
+      });
+
+    const headerLocationForced =
+      forceSavedSalesOrderHeaderLocationWithRetry(
+        salesOrderId,
+        3,
+        3000
+      );
 
     return {
       success: true,
       recordId: salesOrderId,
-      message: 'Sales Order created successfully',
+      message:
+        'Sales Order created successfully',
       shopifyOrderId: shopifyOrderId,
       shopifyOrderName: shopifyOrderName,
       customerId: customerId,
       lineCount: lineItems.length,
-      createdOpenLineCount: createdOpenLineCount,
-      createdClosedLineCount: createdClosedLineCount,
+      createdOpenLineCount:
+        createdOpenLineCount,
+      createdClosedLineCount:
+        createdClosedLineCount,
       discountAmount: discountAmount,
-      productSubtotal: discountPercentData.productSubtotal,
-      discountPercent: discountPercentData.discountPercent,
-      discountLineAdded: discountLineAdded,
-      shippingAmount,
-      headerLocationId: NETSUITE_LOCATION_ID,
-      originatedFromAmazon: originatedFromAmazon,
-      isAmazonFbmOrder: isAmazonFbmOrder,
-      hasConcordFulfillmentLine: hasConcordFulfillmentLine,
-      shouldSetAmazonFbmHeaderFields: shouldSetAmazonFbmHeaderFields,
-      amazonFbmDeliveryDate: amazonFbmDeliveryDate
+      discountAmountForNetSuite:
+        discountAmountForNetSuite,
+      productSubtotal:
+        discountPercentData.productSubtotal,
+      discountPercent:
+        discountPercentData.discountPercent,
+      discountLineAdded:
+        discountLineAdded,
+      isZeroDollarOrder:
+        isZeroDollarOrder,
+      shippingAmount: shippingAmount,
+      shipMethodId: SHIP_METHOD_ID,
+      headerLocationId:
+        NETSUITE_LOCATION_ID,
+      headerLocationForced:
+        headerLocationForced,
+      originatedFromAmazon:
+        originatedFromAmazon,
+      isAmazonFbmOrder:
+        isAmazonFbmOrder,
+      hasConcordFulfillmentLine:
+        hasConcordFulfillmentLine,
+      shouldSetAmazonFbmHeaderFields:
+        shouldSetAmazonFbmHeaderFields,
+      amazonFbmDeliveryDate:
+        amazonFbmDeliveryDate
     };
-
   } catch (error) {
     return {
       success: false,

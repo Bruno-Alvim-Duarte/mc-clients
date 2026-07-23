@@ -2,6 +2,21 @@
 
 Use this reference when designing or reviewing a complete Gravity workflow.
 
+## Record Lifecycle Scope
+
+Before designing or developing a workflow that creates records in a target system, clarify whether the workflow owns only the initial creation or also owns later updates to those created records.
+
+Do not assume "create record" means "create only." Ask:
+
+- Can this source record receive edits, status changes, cancellations, fulfillments, payments, or other meaningful updates after the target record is created?
+- If yes, should this same workflow, another workflow, or no workflow sync those changes to the target system?
+- What source identifier, external ID, integration key, or stored mapping will let Gravity find the already-created target record later?
+- Which fields are allowed to change in the target system, and which fields should remain create-only?
+
+If updates are expected, design the workflow as create-or-update from the beginning. Include duplicate prevention, idempotent lookup keys, target record update paths, checkpointing based on updated timestamps or event ordering, and logging that distinguishes created, updated, skipped, and unchanged records.
+
+If updates are explicitly out of scope, document that decision and make sure the workflow's checkpoint, filtering, and logs do not imply that later source changes are being synchronized.
+
 ## Batch And Checkpoint Pattern
 
 Prefer scheduled workflows for polling integrations that process records in pages.

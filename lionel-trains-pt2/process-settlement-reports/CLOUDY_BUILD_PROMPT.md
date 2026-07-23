@@ -1,0 +1,401 @@
+# Cloudy Prompt - Amazon Settlement Reports to NetSuite Journal Entries
+
+You are helping me build a Gravity workflow.
+
+Workflow name:
+Amazon Settlement Reports to NetSuite Journal Entries
+
+Important: you do not have access to my local files, prior chats, Linear, or any local documentation. Use only the requirements in this prompt and any code snippets I paste into the Gravity step code editors.
+
+## Goal
+
+Create a daily scheduled Gravity workflow that:
+
+1. Lists completed Amazon Seller settlement reports.
+2. Downloads each new settlement report file.
+3. Parses the tab-delimited settlement report.
+4. Categorizes all settlement rows into NetSuite GL categories.
+5. Searches NetSuite for an existing Journal Entry by settlement external ID.
+6. Skips the settlement if the Journal Entry already exists, unless there is a pending attachment retry.
+7. Creates one NetSuite Journal Entry per settlement ID when no matching Journal Entry exists.
+8. Saves the settlement report file in NetSuite File Cabinet and attaches it to the Journal Entry.
+9. Sends failure emails when an app step fails.
+10. Stores only failed settlement attempts in Gravity memory or Key Value Storage. Do not store successfully processed settlements in memory.
+
+## Connections
+
+- Amazon Seller connection: `Amazon - Big Country Toys`
+- NetSuite Advanced connection: `Lionel Trains`
+- Use NetSuite sandbox during testing.
+
+## Amazon Source Requirements
+
+Use Amazon Seller action `List FBM Reports`.
+
+Report type:
+`GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2`
+
+Only process reports where:
+`processingStatus = DONE`
+
+Region:
+America only
+
+Marketplaces:
+All marketplaces available in the existing Amazon connection.
+
+Initial cutoff date:
+`2026-07-01T00:00:00.000Z`
+
+After listing reports, use each report's `reportDocumentId` with Amazon Seller action `Get FBM Report Document`.
+
+That action returns a signed URL. Use an HTTP GET step against that signed URL to download the tab-delimited settlement report body.
+
+## Settlement Report Headers
+
+The downloaded file is tab-delimited and has these headers:
+
+```text
+settlement-id
+settlement-start-date
+settlement-end-date
+deposit-date
+total-amount
+currency
+transaction-type
+order-id
+merchant-order-id
+adjustment-id
+shipment-id
+marketplace-name
+amount-type
+amount-description
+amount
+fulfillment-id
+posted-date
+posted-date-time
+order-item-code
+merchant-order-item-id
+merchant-adjustment-item-id
+sku
+quantity-purchased
+promotion-id
+```
+
+## NetSuite Journal Entry Defaults
+
+Create one NetSuite Journal Entry per settlement ID.
+
+Use these NetSuite defaults:
+
+- Subsidiary: `4`
+- Division custom segment field: `csegdivision`, value `4`
+- Location ID: `32`
+- Class ID: `38`
+- Department ID: `34`
+- Currency: USD, NetSuite internal ID `1`
+- Memo: `Amazon Settlement {settlement-id}`
+- Transaction date: Amazon `settlement-end-date`
+- Posting period: NetSuite default
+- Approval status: NetSuite default
+- AR entity/customer: none
+- Do not apply the Journal Entry against invoices. Only create the Journal Entry.
+
+## Confirmed Accounts
+
+| Category | Account # | NetSuite Internal ID |
+| --- | ---: | ---: |
+| Accounts Receivable | 1100 | 123 |
+| Cash | 1095 | 1113 |
+| Amazon Selling Fees | 8606 | 336 |
+| Amazon Fulfillment Fees | 7716 | 434 |
+| Amazon Storage Fee | 7736 | 523 |
+| Refunds | 6425 | 260 |
+| Department 300 | n/a | 34 |
+
+Known pending account IDs:
+
+- Tax account: not confirmed yet. The parser/build code currently uses `TODO_TAX_ACCOUNT_ID`; do not create production Journal Entries until this is replaced.
+- Clearing/balancing account: not confirmed yet. The payload builder has optional `balancingAccountId = null`; do not invent an account.
+- Production File Cabinet folder ID: not confirmed yet. Sandbox folder ID is `701790`.
+
+## Categorization Rules
+
+Most important rule:
+Do not ignore settlement rows unless the client explicitly approves that behavior.
+
+Use compound categorization across:
+
+- `transaction-type`
+- `amount-type`
+- `amount-description`
+
+Do not rely on `amount-type` alone.
+
+Debit/credit direction:
+
+- For settlement detail rows, use the Amazon amount sign.
+- Positive detail amounts become credits.
+- Negative detail amounts become debits.
+- The header `total-amount` is the bank deposit and is special: positive header total debits Cash, negative header total credits Cash.
+
+Current mapping:
+
+- Cash `1113`: header `total-amount` as the bank deposit.
+- Accounts Receivable `123`: `Order / ItemPrice / Principal` and other non-tax order item price amounts.
+- Tax: tax rows must be recorded, but the NetSuite tax account ID is still pending.
+- Amazon Selling Fees `336`: selling fee rows, Amazon fee rows, fee corrections, and negative catch-all leftovers if client approves catch-all.
+- Amazon Fulfillment Fees `434`: fulfillment, per-unit fulfillment, customer return, removal order, inbound transportation, and similar fulfillment descriptions.
+- Amazon Storage Fee `523`: inventory storage, AWD storage, AWD processing, AWD transportation, inbound placement, and similar storage descriptions.
+- Refunds `260`: any `transaction-type` starting with `Refund`, including `Refund_Retrocharge`.
+- Positive uncategorized leftovers may route to Cash if the client approves the catch-all strategy.
+
+Tax handling:
+
+- The workflow must validate tax rows.
+- Amazon tax and withheld tax should normally net to zero.
+- Use a compound rule such as `amount-type = ItemPrice` plus `amount-description` containing `Tax`, paired against `ItemWithheldTax`.
+- If tax and withheld tax do not net to zero, fail or warn the settlement and send failure email.
+- We confirmed tax should be recorded, but the NetSuite account is not available yet. Do not silently omit tax lines.
+
+Catch-all:
+
+- Categorize all identifiable rows first.
+- If catch-all is approved:
+  - negative leftovers go to Amazon Selling Fees `336`
+  - positive leftovers go to Cash `1113`
+- Client approval for catch-all is still pending.
+
+## Idempotency And Memory
+
+Use settlement ID as the canonical key.
+
+Use NetSuite as the source of truth for successfully processed settlements:
+
+- External ID format: `amazon_settlement_{settlement-id}`
+- Search NetSuite by external ID before creating the Journal Entry.
+- If exactly one matching Journal Entry exists, skip creation.
+- If multiple matching Journal Entries are found, stop/skip that settlement and send a failure email.
+
+Do not save successful settlements in Gravity memory.
+
+Only save failure state in Gravity memory or Key Value Storage:
+
+- Key: `amazon_settlement_failure_{settlement-id}`
+- Value should include:
+  - `status`
+  - `failurePhase`
+  - `errorMessage`
+  - `settlementId`
+  - `reportId`
+  - `reportDocumentId`
+  - `externalId`
+  - `journalEntryId` if one exists
+  - `tranId` if one exists
+  - timestamp
+
+If a Journal Entry was created but CSV attachment failed:
+
+- Store the failure state with the created NetSuite Journal Entry ID.
+- On a later run, detect the existing Journal Entry and retry only the CSV attachment.
+- After successful retry, clear the failure key if Gravity supports delete; otherwise overwrite it with `status = resolved`.
+
+## Logging And Failure Emails
+
+Recipients:
+
+```text
+bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com
+```
+
+Add Step Completion Options for app steps only:
+
+- Amazon Seller app steps
+- HTTP GET step
+- NetSuite Execute Custom Code steps
+- Memory/KV steps if they are connector/app steps in this Gravity environment
+
+Do not add app-step completion options to native map/if/loop steps unless needed for explicit flow control.
+
+Failure behavior:
+
+- For app failures outside the settlement loop, stop the workflow and email recipients.
+- For app failures inside the settlement loop, continue the loop after logging/emailing and storing failure state.
+- Failed settlement should not block the rest of the batch.
+
+Log messages:
+
+- Start app logs with `[Amazon]`, `[HTTP]`, `[NetSuite]`, or `[Memory]`.
+- Do not include step numbers in log messages.
+- Include settlement ID, report ID, report document ID, external ID, and NetSuite Journal Entry ID when available.
+
+Email subject:
+
+`Amazon Settlement Reports to NetSuite Journal Entries - Step Failed`
+
+Email body should include:
+
+- Workflow name
+- Failed step name
+- App name
+- Failure behavior
+- Error message using the real Gravity error variable for that step
+- Settlement ID if available
+- Report ID if available
+- Report document ID if available
+- External ID if available
+- Journal Entry ID if available
+
+Before saving log/email configuration, verify every `{{ ... }}` variable reference against the actual step keys and outputs. Do not leave placeholder variable references.
+
+## Step Structure To Create
+
+Please create this workflow structure. Use clear step names close to the names below. The exact generated step keys can differ, but after creating the steps, update the code snippets' `input.<stepKey>` references to the real keys.
+
+1. Schedule Trigger
+   - Daily cadence.
+
+2. Map: `Build Runtime Config`
+   - Use code snippet: `00_build_runtime_config.js`
+   - This is the shared source for recipients, cutoff date, NetSuite defaults, account IDs, File Cabinet folder, memory key prefix, and behavior flags.
+   - Later snippets should read this output through `input.mapBuildRuntimeConfig[0]`; replace `mapBuildRuntimeConfig` with the actual generated step key.
+
+3. Amazon Seller: `List Completed Settlement Reports`
+   - Action: `List FBM Reports`
+   - report type: `GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2`
+   - processing status: `DONE`
+   - region: America
+
+4. Map: `Filter Completed Settlement Reports`
+   - Use code snippet: `01_filter_completed_settlement_reports.js`
+   - Replace input step keys with the real runtime config and Amazon list step keys.
+   - Output array path for loop: `reports`
+
+5. Loop: `Loop Settlement Reports`
+   - Iterate over the filtered `reports` array.
+
+Inside the loop:
+
+6. Amazon Seller: `Get Settlement Report Document`
+   - Action: `Get FBM Report Document`
+   - Input: current loop item's `reportDocumentId`
+
+7. HTTP: `Download Settlement Report`
+   - Method: GET
+   - URL: signed URL from `Get Settlement Report Document`
+
+8. Map: `Parse Settlement Report TSV`
+   - Use code snippet: `02_parse_settlement_report_tsv.js`
+   - Replace input step keys with the actual runtime config, loop, Amazon document, and HTTP download step keys.
+
+9. If: `Settlement Parse Is Valid`
+   - Continue only when parsed settlement output `canCreateJournalEntry = true`.
+   - If false, build failure memory payload, save failure state, send/log failure, and continue loop.
+
+10. Map: `Build NetSuite Journal Entry Payload`
+   - Use code snippet: `03_build_journal_entry_payload.js`
+   - Replace input step keys with the real runtime config and parse map keys.
+   - This step may fail if tax account or balancing account is still missing and required. That is expected until final accounting IDs are provided.
+
+11. NetSuite Execute Custom Code: `Search Existing Journal Entry`
+   - Use code snippet: `01_search_existing_journal_entry.js`
+   - Replace input step key with the real payload map key.
+
+12. If: `Existing Journal Entry Decision`
+   - If multiple matches are found, save failure state, send/log failure, and continue loop.
+   - If exactly one match exists and there is no pending attachment failure, log skip and continue loop.
+   - If exactly one match exists and there is a pending attachment failure for this settlement, continue to attachment retry.
+   - If no match exists, create the Journal Entry.
+
+13. NetSuite Execute Custom Code: `Create Journal Entry`
+   - Use code snippet: `02_create_journal_entry.js`
+   - Replace input step key with the real payload map key.
+
+14. NetSuite Execute Custom Code: `Attach Settlement CSV`
+   - Use code snippet: `03_attach_settlement_csv.js`
+   - Replace input step keys with the real runtime config, payload, create/search, and HTTP download step keys.
+
+15. Map: `Build Resolved Failure Memory Payload`
+   - Use code snippet: `05_build_resolved_failure_memory_payload.js`
+   - Use only if there was a prior failure key to resolve.
+   - Replace input step keys with the real runtime config, payload, create, and attach step keys.
+
+16. Memory/KV: `Clear Or Resolve Failure State`
+   - Prefer deleting `amazon_settlement_failure_{settlement-id}` if supported.
+   - If delete is not supported, set the same key to `status = resolved`.
+
+17. Flow Control: `Log Settlement Success`
+   - Log created, skipped, or attachment retried.
+
+After the loop:
+
+18. Optional Memory: `Update Checkpoint`
+   - If implemented, update only after the full page/batch succeeds.
+   - Do not use this as processed-settlement memory.
+   - Do not let checkpointing prevent retrying failures saved in memory.
+
+19. Flow Control: `Log Batch Summary`
+   - Include report count, processed count, skipped count, failure count if available.
+
+## Code Snippets
+
+I have local code snippets prepared for the map and NetSuite Execute Custom Code steps. Do not invent replacement code. When a step needs code, ask me to paste the corresponding snippet, then update only the `input.<stepKey>` references to the actual generated Gravity step keys.
+
+Snippet mapping:
+
+- Map `Build Runtime Config`: `00_build_runtime_config.js`
+- Map `Filter Completed Settlement Reports`: `01_filter_completed_settlement_reports.js`
+- Map `Parse Settlement Report TSV`: `02_parse_settlement_report_tsv.js`
+- Map `Build NetSuite Journal Entry Payload`: `03_build_journal_entry_payload.js`
+- Map `Build Failure Memory Payload`: `04_build_failure_memory_payload.js`
+- Map `Build Resolved Failure Memory Payload`: `05_build_resolved_failure_memory_payload.js`
+- NetSuite `Search Existing Journal Entry`: `01_search_existing_journal_entry.js`
+- NetSuite `Create Journal Entry`: `02_create_journal_entry.js`
+- NetSuite `Attach Settlement CSV`: `03_attach_settlement_csv.js`
+
+## Important Open Items
+
+Do not go live until these are resolved:
+
+- NetSuite tax account internal ID.
+- NetSuite clearing/balancing account decision and internal ID, if needed.
+- Production NetSuite File Cabinet folder internal ID.
+- Client approval for catch-all categorization.
+- Final decision on category-only lines versus order-level line memo. Current build assumes category-level lines.
+
+## Sample Validation Already Performed Locally
+
+The local parser and payload builder were tested against a real sample settlement report.
+
+Sample settlement:
+
+- Settlement ID: `26590577301`
+- Header total: `16311.96`
+- Detail row total: `16311.96`
+- Difference: `0`
+- Tax positive amount: `2269.67`
+- Tax negative amount: `-2269.67`
+- Tax net: `0`
+- Catch-all rows: `88`
+
+The Journal Entry payload builder balanced with a temporary placeholder tax account:
+
+- Journal Entry line count: `10`
+- Total debits: `33236.25`
+- Total credits: `33236.25`
+- Difference: `0`
+
+This confirms the parsing and sign-based balancing strategy, but production still requires the real tax account ID and client approval for catch-all behavior.
+
+## Final Review Request
+
+After creating or updating the workflow, review:
+
+1. All app step failure behavior.
+2. All email recipients and subjects.
+3. Every `{{ ... }}` variable reference.
+4. Every code snippet `input.<stepKey>` reference.
+5. NetSuite account IDs, department/class/location/division IDs, and File Cabinet folder ID.
+6. That successful settlements are not stored in memory.
+7. That failed settlements are saved in memory/KV for retry.
+8. That an existing NetSuite Journal Entry causes skip unless there is a pending CSV attachment retry.

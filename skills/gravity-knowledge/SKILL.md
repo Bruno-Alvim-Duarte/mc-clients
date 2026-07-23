@@ -67,7 +67,21 @@ Use a `loop` step to iterate over an array returned by a prior step.
 
 Use `set memory` to write a key-value checkpoint or state value. For detailed memory behavior, pair this skill with the future `using-memory-in-gravity` skill when it exists.
 
-## Common Workflow Pattern
+## Workflow Design Checks
+
+### Record Lifecycle Scope
+
+Before designing or developing a workflow that creates records in a target system, confirm whether the workflow is responsible only for creation or must also manage later updates to those same records.
+
+Ask explicitly:
+
+- Can the source record change after the target record is created?
+- If it changes, is the workflow expected to pass those changes to the target record?
+- What stable key links the source record to the created target record for future updates?
+
+If updates are in scope, design create-or-update behavior, idempotency, duplicate prevention, checkpoint fields, and target record lookup/update paths from the start instead of treating creation as a one-time operation.
+
+### Batch Workflow Pattern
 
 For batch integrations, prefer checkpointed pagination:
 
