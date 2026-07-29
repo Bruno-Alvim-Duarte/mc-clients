@@ -1041,6 +1041,8 @@ function execute() {
     const fulfillmentOrderLineLocationMap =
       buildFulfillmentOrderLineLocationMap(order);
 
+    // This controls only the Shopify order class field. The Sales Order
+    // header location is always wfArguments.locationID.
     const shopifyOrderClass =
       getShopifyOrderClassWithFulfillmentLocations(
         order,
@@ -1060,6 +1062,8 @@ function execute() {
         NETSUITE_CONCORD_LOCATION_ID
       );
 
+    // These flags do not decide the Shopify order class. They only control
+    // Amazon FBM-specific header fields such as custbody_amz_fbm_del_date.
     const shouldSetAmazonFbmHeaderFields =
       originatedFromAmazon &&
       hasConcordFulfillmentLine;
@@ -1195,6 +1199,8 @@ function execute() {
       value: shopifyOrderClass
     });
 
+    // Amazon FBM header fields are separate from custbody_shopify_ord_class.
+    // Order class can be Amazon while these header fields remain unset.
     if (shouldSetAmazonFbmHeaderFields) {
       salesOrderRec.setValue({
         fieldId: SHIP_COMPLETE_FIELD_ID,

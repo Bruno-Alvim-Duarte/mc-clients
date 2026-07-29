@@ -7,10 +7,10 @@
 //
 // Replace step keys with the actual keys Cloudy creates.
 
-const runtimeConfig = (input.mapBuildRuntimeConfig || [])[0] || {};
-const currentReport = (input.iterateSettlementReport || [])[0] || {};
-const reportDocument = (input.amazonGetFbmReportDocument || [])[0] || {};
-const httpResponse = (input.httpDownloadSettlementReport || [])[0] || {};
+const runtimeConfig = (input.mapF0FK || [])[0] || {};
+const currentReport = (input.iterateEV9J || [])[0] || {};
+const reportDocument = (input.amazonSellerNaNKN7D || [])[0] || {};
+const httpResponse = (input.httpRequestHJ8M || [])[0] || {};
 
 const CONFIG = {
   accountIds: {
@@ -19,12 +19,11 @@ const CONFIG = {
     amazonSellingFees: "336",
     amazonFulfillmentFees: "434",
     amazonStorageFee: "523",
-    refunds: "260",
-    tax: "TODO_TAX_ACCOUNT_ID"
+    refunds: "260"
   },
   departmentId: "34",
   allowCatchAllBySign: true,
-  recordTaxLines: true,
+  recordTaxLines: false,
   failWhenTaxDoesNotNetToZero: true,
   moneyTolerance: 0.01
 };
@@ -176,8 +175,8 @@ function classifyRow(row) {
   if (isTaxRow(row)) {
     return {
       category: "TAX",
-      reason: "Amazon tax or withheld tax",
-      accountId: CONFIG.accountIds.tax,
+      reason: "Amazon tax or withheld tax, validated only",
+      accountId: null,
       includeInJournal: CONFIG.recordTaxLines
     };
   }
@@ -262,9 +261,9 @@ function classifyRow(row) {
     ])
   ) {
     return {
-      category: "CASH",
-      reason: "Amazon reimbursement treated as cash-positive adjustment",
-      accountId: CONFIG.accountIds.cash,
+      category: "AMAZON_SELLING_FEES",
+      reason: "Amazon reimbursement treated as selling-fee offset",
+      accountId: CONFIG.accountIds.amazonSellingFees,
       includeInJournal: true
     };
   }
@@ -281,9 +280,9 @@ function classifyRow(row) {
     }
 
     return {
-      category: "CASH",
-      reason: "Catch-all positive leftover",
-      accountId: CONFIG.accountIds.cash,
+      category: "AMAZON_SELLING_FEES",
+      reason: "Catch-all positive leftover treated as selling-fee offset",
+      accountId: CONFIG.accountIds.amazonSellingFees,
       includeInJournal: true,
       catchAll: true
     };
@@ -362,8 +361,10 @@ for (const row of detailRows) {
 
   if (classification.category === "TAX") {
     taxRows.push(row);
+    if (!classification.includeInJournal) {
+      continue;
+    }
   }
-
   if (classification.catchAll) {
     catchAllRows.push({
       lineNumber: row.__lineNumber,
@@ -412,10 +413,6 @@ if (CONFIG.failWhenTaxDoesNotNetToZero && Math.abs(taxNet) > CONFIG.moneyToleran
   errors.push(`Amazon tax and withheld tax do not net to zero for settlement ${settlementId}; tax net ${taxNet}`);
 }
 
-if (CONFIG.recordTaxLines && CONFIG.accountIds.tax.indexOf("TODO") === 0 && taxRows.length > 0) {
-  errors.push("Tax rows are present and tax should be recorded, but CONFIG.accountIds.tax is still TODO_TAX_ACCOUNT_ID");
-}
-
 if (uncategorizedRows.length > 0) {
   errors.push(`Settlement has ${uncategorizedRows.length} uncategorized rows`);
 }
@@ -439,11 +436,20 @@ const settlement = {
   rowCount: rows.length,
   detailRowCount: detailRows.length,
   categories: Object.keys(categories).sort().map(category => categories[category]),
+  cashSummary: {
+    accountId: CONFIG.accountIds.cash,
+    source: "settlement header total-amount",
+    amount: Math.abs(headerTotal),
+    debitAmount: headerTotal >= 0 ? Math.abs(headerTotal) : 0,
+    creditAmount: headerTotal < 0 ? Math.abs(headerTotal) : 0,
+    includedInCategories: false
+  },
   taxSummary: {
     rowCount: taxRows.length,
     positiveAmount: taxPositive,
     negativeAmount: taxNegative,
-    netAmount: taxNet
+    netAmount: taxNet,
+    recordedInJournal: CONFIG.recordTaxLines
   },
   catchAllRows,
   uncategorizedRows,

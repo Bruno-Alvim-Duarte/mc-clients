@@ -113,10 +113,10 @@ Use these NetSuite defaults:
 | Refunds | 6425 | 260 |
 | Department 300 | n/a | 34 |
 
-Known pending account IDs:
+Known pending IDs:
 
-- Tax account: not confirmed yet. The parser/build code currently uses `TODO_TAX_ACCOUNT_ID`; do not create production Journal Entries until this is replaced.
-- Clearing/balancing account: not confirmed yet. The payload builder has optional `balancingAccountId = null`; do not invent an account.
+- Tax account: not needed. Tax rows must not be posted to the Journal Entry.
+- Clearing/balancing account: not needed. Cash account `1113` acts as the clearing line by using the settlement header `total-amount`.
 - Production File Cabinet folder ID: not confirmed yet. Sandbox folder ID is `701790`.
 
 ## Categorization Rules
@@ -143,27 +143,36 @@ Current mapping:
 
 - Cash `1113`: header `total-amount` as the bank deposit.
 - Accounts Receivable `123`: `Order / ItemPrice / Principal` and other non-tax order item price amounts.
-- Tax: tax rows must be recorded, but the NetSuite tax account ID is still pending.
-- Amazon Selling Fees `336`: selling fee rows, Amazon fee rows, fee corrections, and negative catch-all leftovers if client approves catch-all.
+- Tax: do not record tax rows in the Journal Entry. Validate tax only.
+- Amazon Selling Fees `336`: selling fee rows, Amazon fee rows, fee corrections, reimbursements, and positive or negative catch-all leftovers if client approves catch-all.
 - Amazon Fulfillment Fees `434`: fulfillment, per-unit fulfillment, customer return, removal order, inbound transportation, and similar fulfillment descriptions.
 - Amazon Storage Fee `523`: inventory storage, AWD storage, AWD processing, AWD transportation, inbound placement, and similar storage descriptions.
 - Refunds `260`: any `transaction-type` starting with `Refund`, including `Refund_Retrocharge`.
-- Positive uncategorized leftovers may route to Cash if the client approves the catch-all strategy.
+- Do not route settlement detail rows to Cash. Cash must only represent the settlement header payout/deposit.
+
+Confirmed AR/Cash balancing rule:
+
+- Principal invoice value is credited to Accounts Receivable `123`.
+- Cash account `1113` is debited for the settlement payout/deposit from the header `total-amount`.
+- Fee/refund/storage/fulfillment/reimbursement/catch-all lines use their mapped non-Cash accounts by sign.
+- Do not add a separate clearing or balancing account. If the generated Journal Entry does not balance after tax is excluded and all non-tax rows are categorized, skip the settlement and alert.
 
 Tax handling:
 
 - The workflow must validate tax rows.
 - Amazon tax and withheld tax should normally net to zero.
 - Use a compound rule such as `amount-type = ItemPrice` plus `amount-description` containing `Tax`, paired against `ItemWithheldTax`.
-- If tax and withheld tax do not net to zero, fail or warn the settlement and send failure email.
-- We confirmed tax should be recorded, but the NetSuite account is not available yet. Do not silently omit tax lines.
+- If tax and withheld tax do not net to zero, skip that settlement, save failure state, and send failure email.
+- If tax nets to zero, omit tax rows from the Journal Entry.
+- Do not silently omit tax rows without validating the tax net first.
 
 Catch-all:
 
 - Categorize all identifiable rows first.
 - If catch-all is approved:
   - negative leftovers go to Amazon Selling Fees `336`
-  - positive leftovers go to Cash `1113`
+  - positive leftovers go to Amazon Selling Fees `336` as an offset
+- Do not send positive leftovers to Cash because Cash is already the net settlement payout from the header.
 - Client approval for catch-all is still pending.
 
 ## Idempotency And Memory
@@ -181,8 +190,9 @@ Do not save successful settlements in Gravity memory.
 
 Only save failure state in Gravity memory or Key Value Storage:
 
-- Key: `amazon_settlement_failure_{settlement-id}`
-- Value should include:
+- Key: `amazon_settlement_failures`
+- Value: an array of unresolved failed settlement objects.
+- Each array item should include:
   - `status`
   - `failurePhase`
   - `errorMessage`
@@ -193,12 +203,14 @@ Only save failure state in Gravity memory or Key Value Storage:
   - `journalEntryId` if one exists
   - `tranId` if one exists
   - timestamp
+- Before saving a new failure, get the current `amazon_settlement_failures` array, remove any existing item for the same `settlementId`, append the latest failure item, then set the whole array back to the same key.
+- In the failure branch, run a fresh Memory/KV Get for `amazon_settlement_failures` immediately before `Build Failure Memory Payload`; do not rely only on the initial get from the start of the workflow, or failures added earlier in the same run can be overwritten.
 
 If a Journal Entry was created but CSV attachment failed:
 
 - Store the failure state with the created NetSuite Journal Entry ID.
 - On a later run, detect the existing Journal Entry and retry only the CSV attachment.
-- After successful retry, clear the failure key if Gravity supports delete; otherwise overwrite it with `status = resolved`.
+- After successful retry, get the current `amazon_settlement_failures` array, remove the current settlement from the array, then set the whole array back to the same key.
 
 ## Logging And Failure Emails
 
@@ -266,75 +278,84 @@ Please create this workflow structure. Use clear step names close to the names b
    - processing status: `DONE`
    - region: America
 
-4. Map: `Filter Completed Settlement Reports`
+4. Memory/KV: `Get Failed Settlements`
+   - Get key `amazon_settlement_failures`.
+   - If the key does not exist, continue with an empty array.
+   - This step must happen before the filter map so failed settlements can be retried even if Amazon's current list does not include them.
+
+5. Map: `Filter Completed Settlement Reports`
    - Use code snippet: `01_filter_completed_settlement_reports.js`
    - Replace input step keys with the real runtime config and Amazon list step keys.
+   - Also replace the Memory/KV get step key for `amazon_settlement_failures`.
+   - This map merges completed Amazon reports with unresolved failed settlements from the array and dedupes them.
    - Output array path for loop: `reports`
 
-5. Loop: `Loop Settlement Reports`
+6. Loop: `Loop Settlement Reports`
    - Iterate over the filtered `reports` array.
 
 Inside the loop:
 
-6. Amazon Seller: `Get Settlement Report Document`
+7. Amazon Seller: `Get Settlement Report Document`
    - Action: `Get FBM Report Document`
    - Input: current loop item's `reportDocumentId`
 
-7. HTTP: `Download Settlement Report`
+8. HTTP: `Download Settlement Report`
    - Method: GET
    - URL: signed URL from `Get Settlement Report Document`
 
-8. Map: `Parse Settlement Report TSV`
+9. Map: `Parse Settlement Report TSV`
    - Use code snippet: `02_parse_settlement_report_tsv.js`
    - Replace input step keys with the actual runtime config, loop, Amazon document, and HTTP download step keys.
 
-9. If: `Settlement Parse Is Valid`
+10. If: `Settlement Parse Is Valid`
    - Continue only when parsed settlement output `canCreateJournalEntry = true`.
    - If false, build failure memory payload, save failure state, send/log failure, and continue loop.
 
-10. Map: `Build NetSuite Journal Entry Payload`
+11. Map: `Build NetSuite Journal Entry Payload`
    - Use code snippet: `03_build_journal_entry_payload.js`
    - Replace input step keys with the real runtime config and parse map keys.
-   - This step may fail if tax account or balancing account is still missing and required. That is expected until final accounting IDs are provided.
+   - This step should not add a clearing/balancing account. Cash `1113` is the clearing line from the settlement header total.
+   - If the Journal Entry does not balance, send the settlement to the failure branch and continue the loop.
 
-11. NetSuite Execute Custom Code: `Search Existing Journal Entry`
+12. NetSuite Execute Custom Code: `Search Existing Journal Entry`
    - Use code snippet: `01_search_existing_journal_entry.js`
    - Replace input step key with the real payload map key.
 
-12. If: `Existing Journal Entry Decision`
+13. If: `Existing Journal Entry Decision`
    - If multiple matches are found, save failure state, send/log failure, and continue loop.
    - If exactly one match exists and there is no pending attachment failure, log skip and continue loop.
    - If exactly one match exists and there is a pending attachment failure for this settlement, continue to attachment retry.
    - If no match exists, create the Journal Entry.
 
-13. NetSuite Execute Custom Code: `Create Journal Entry`
+14. NetSuite Execute Custom Code: `Create Journal Entry`
    - Use code snippet: `02_create_journal_entry.js`
    - Replace input step key with the real payload map key.
 
-14. NetSuite Execute Custom Code: `Attach Settlement CSV`
+15. NetSuite Execute Custom Code: `Attach Settlement CSV`
    - Use code snippet: `03_attach_settlement_csv.js`
    - Replace input step keys with the real runtime config, payload, create/search, and HTTP download step keys.
 
-15. Map: `Build Resolved Failure Memory Payload`
+16. Map: `Build Resolved Failure Memory Payload`
    - Use code snippet: `05_build_resolved_failure_memory_payload.js`
-   - Use only if there was a prior failure key to resolve.
+   - Use only if there was a prior failure array item to resolve.
+   - It returns the same shared key and a new array with the current settlement removed.
    - Replace input step keys with the real runtime config, payload, create, and attach step keys.
 
-16. Memory/KV: `Clear Or Resolve Failure State`
-   - Prefer deleting `amazon_settlement_failure_{settlement-id}` if supported.
-   - If delete is not supported, set the same key to `status = resolved`.
+17. Memory/KV: `Save Updated Failure Array`
+   - Key: `amazon_settlement_failures`
+   - Value: the `value` array returned by `Build Resolved Failure Memory Payload`.
 
-17. Flow Control: `Log Settlement Success`
+18. Flow Control: `Log Settlement Success`
    - Log created, skipped, or attachment retried.
 
 After the loop:
 
-18. Optional Memory: `Update Checkpoint`
+19. Optional Memory: `Update Checkpoint`
    - If implemented, update only after the full page/batch succeeds.
    - Do not use this as processed-settlement memory.
    - Do not let checkpointing prevent retrying failures saved in memory.
 
-19. Flow Control: `Log Batch Summary`
+20. Flow Control: `Log Batch Summary`
    - Include report count, processed count, skipped count, failure count if available.
 
 ## Code Snippets
@@ -357,8 +378,6 @@ Snippet mapping:
 
 Do not go live until these are resolved:
 
-- NetSuite tax account internal ID.
-- NetSuite clearing/balancing account decision and internal ID, if needed.
 - Production NetSuite File Cabinet folder internal ID.
 - Client approval for catch-all categorization.
 - Final decision on category-only lines versus order-level line memo. Current build assumes category-level lines.
@@ -378,14 +397,15 @@ Sample settlement:
 - Tax net: `0`
 - Catch-all rows: `88`
 
-The Journal Entry payload builder balanced with a temporary placeholder tax account:
+The Journal Entry payload builder balanced after tax rows were validated and excluded from the Journal Entry:
 
-- Journal Entry line count: `10`
-- Total debits: `33236.25`
-- Total credits: `33236.25`
+- Tax recorded in Journal Entry: `false`
+- Journal Entry line count: `8`
+- Total debits: `30966.58`
+- Total credits: `30966.58`
 - Difference: `0`
 
-This confirms the parsing and sign-based balancing strategy, but production still requires the real tax account ID and client approval for catch-all behavior.
+This confirms the parsing and sign-based balancing strategy with Cash as the clearing line. Production still requires the production File Cabinet folder ID and client approval for catch-all behavior.
 
 ## Final Review Request
 
@@ -399,3 +419,4 @@ After creating or updating the workflow, review:
 6. That successful settlements are not stored in memory.
 7. That failed settlements are saved in memory/KV for retry.
 8. That an existing NetSuite Journal Entry causes skip unless there is a pending CSV attachment retry.
+9. That tax rows are validated for zero net and not posted to the Journal Entry.

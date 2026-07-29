@@ -2,10 +2,10 @@
 
 ## Turnover Readiness
 
-Status: Not ready, pending accounting account mapping
+Status: Build-ready for sandbox; production still needs File Cabinet folder and catch-all approval
 
 Summary:
-This integration should retrieve Amazon settlement reports on a daily schedule and create one NetSuite Journal Entry per settlement ID. Most operational decisions are now confirmed: report type, marketplace/region scope, completed-report filter, settlement ID idempotency, category-level aggregation, NetSuite defaults, checkpoint behavior, error recipients, and sandbox testing. The remaining client blocker is the NetSuite account mapping for each Journal Entry line, including the clearing account for the credit side.
+This integration should retrieve Amazon settlement reports on a daily schedule and create one NetSuite Journal Entry per settlement ID. Most operational decisions are now confirmed: report type, marketplace/region scope, completed-report filter, settlement ID idempotency, category-level aggregation, NetSuite defaults, checkpoint behavior, error recipients, sandbox testing, tax handling, and AR/Cash balancing. Tax rows are validation-only and are not posted when tax nets to zero. Cash account `1113` acts as the clearing line through the settlement header `total-amount`; no separate clearing/balancing account is needed.
 
 ## Confirmed Understanding
 
@@ -92,21 +92,21 @@ This integration should retrieve Amazon settlement reports on a daily schedule a
 
 5. What NetSuite account should be used for each settlement amount category: orders/principal, order fees, refunds, other fees, and settlement payout/balancing line?
 
-   Answer: Not confirmed yet. This needs to be asked to the client.
+   Answer: Confirmed in the current build prompt/turnover review. Accounts Receivable is `123`, Cash is `1113`, Amazon Selling Fees is `336`, Amazon Fulfillment Fees is `434`, Amazon Storage Fee is `523`, Refunds is `260`, and Department 300 is `34`.
 
-   Client question: Which exact NetSuite account IDs should be used for receivables, fees, refunds, other fees, and the settlement clearing account?
+   Client question: Resolved. No separate settlement clearing account is required.
 
    Why it matters: Journal Entries must balance and follow Lionel's accounting policy.
 
-   Implementation impact: This blocks final Journal Entry line construction.
+   Implementation impact: Journal Entry construction can proceed in sandbox using confirmed accounts. Cash acts as the clearing line.
 
 6. For each settlement amount type, should the line be debit or credit?
 
-   Answer: Receivables and fees should be debit lines. A clearing account should be used for the credit side. The exact clearing account still needs client confirmation.
+   Answer: Preserve Amazon signs for detail rows: positive detail amounts become credits, negative detail amounts become debits. The header `total-amount` is the Cash line: positive header total debits Cash, negative header total credits Cash. Principal invoice value credits Accounts Receivable; Cash debits the net payout; fee/refund lines balance the entry by sign.
 
    Why it matters: Amazon values may already include negative signs, and the workflow needs a confirmed accounting rule instead of inferring signs.
 
-   Implementation impact: Debit/credit direction is partially confirmed, but final implementation still depends on confirmed NetSuite account IDs.
+   Implementation impact: Debit/credit direction and NetSuite account IDs are confirmed for sandbox.
 
 7. Should Journal Entry lines be aggregated by category only, or should they preserve more detail from the Amazon settlement report?
 
@@ -262,14 +262,9 @@ This integration should retrieve Amazon settlement reports on a daily schedule a
 
 ## Remaining Client Questions
 
-1. Which exact NetSuite account IDs should be used for each Journal Entry category?
-   - Receivables / order principal
-   - Order fees
-   - Refunds
-   - Other fees
-   - Settlement clearing account / credit line
+1. Production NetSuite File Cabinet folder internal ID.
 
-2. Should posting period and approval status use NetSuite defaults, or should the workflow set them explicitly?
+2. Client approval for catch-all categorization: negative uncategorized leftovers to Amazon Selling Fees and positive uncategorized leftovers to Amazon Selling Fees as offsets.
 
 3. If multiple NetSuite Journal Entries are found for the same settlement ID, should the workflow stop and alert? Recommended answer: yes, stop that settlement and send an email.
 

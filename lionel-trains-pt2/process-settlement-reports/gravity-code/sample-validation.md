@@ -22,23 +22,23 @@ Validation date: 2026-07-21
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Accounts Receivable | 123 | 877 | 30662.02 | 30662.02 | 0 |
 | Amazon Fulfillment Fees | 434 | 793 | -6474.93 | 0 | -6474.93 |
-| Amazon Selling Fees | 336 | 892 | -4977.97 | 0 | -4977.97 |
+| Amazon Selling Fees | 336 | 900 | -4849.39 | 128.58 | -4977.97 |
 | Amazon Storage Fee | 523 | 3 | -2077.49 | 0 | -2077.49 |
-| Cash | 1113 | 8 | 128.58 | 128.58 | 0 |
 | Refunds | 260 | 106 | -948.25 | 175.98 | -1124.23 |
-| Tax | TODO | 1595 | 0 | 2269.67 | -2269.67 |
 
 ## Journal Entry Payload Result
 
-The parser and payload builder were tested through `maps/00_build_runtime_config.js` with workflow argument `amazonSettlementTaxAccountId = 999` only to validate balancing logic.
+The parser and payload builder were tested through `maps/00_build_runtime_config.js` using the confirmed rule that tax rows are validated only and are not posted to the Journal Entry.
 
-- Journal Entry line count: `10`
-- Total debits: `33236.25`
-- Total credits: `33236.25`
+- Tax recorded in Journal Entry: `false`
+- Cash Journal Entry line: debit `16311.96`, from settlement header `total-amount`
+- Journal Entry line count: `8`
+- Total debits: `30966.58`
+- Total credits: `30966.58`
 - Difference: `0`
 
 ## Notes
 
-- Production cannot proceed until the real NetSuite tax account internal ID is supplied.
-- Catch-all rows exist in the sample, so Lionel approval for catch-all behavior is required before go-live.
-- The sample balances without a clearing account when all settlement rows, including tax, are represented by sign.
+- Tax rows are skipped only after validating tax and withheld tax net to zero. If tax net is not zero, the workflow must skip that settlement and alert.
+- Catch-all rows exist in the sample and are included in Amazon Selling Fees as offsets when positive. Lionel approval for catch-all behavior is required before go-live.
+- The sample balances without a clearing account. Cash account `1113` acts as the clearing line through the settlement header `total-amount`.

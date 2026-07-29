@@ -5,7 +5,7 @@
 Status: Mostly ready, but not build-ready until the remaining accounting edge cases and production NetSuite attachment details are confirmed.
 
 Summary:
-The integration shape is clear: a daily scheduled Gravity workflow will poll Amazon Seller for completed settlement reports, download each new settlement CSV, aggregate the report into accountant-defined GL categories, and create one NetSuite Journal Entry per settlement report with the CSV attached. The older planning doc confirms several operational defaults that were missing here, including NetSuite subsidiary/division/location/class, settlement ID idempotency, settlement-end-date checkpointing, existing Journal Entry skip behavior, sandbox testing, and failure email recipients. The requirements buddy call clarified that no settlement row should be ignored, debit/credit direction should follow the amount sign, and categorization must use a compound rule across `transaction-type`, `amount-type`, and `amount-description`. Successful settlements should not be stored in Gravity memory; NetSuite duplicate lookup by settlement ID is the source of truth for already-created Journal Entries. Gravity memory or Key Value Storage should only hold failed settlement attempts so later runs can retry. The main open decisions are tax handling, clearing/balancing account behavior, production File Cabinet folder, and final client approval of catch-all categorization rules.
+The integration shape is clear: a daily scheduled Gravity workflow will poll Amazon Seller for completed settlement reports, download each new settlement CSV, aggregate the report into accountant-defined GL categories, and create one NetSuite Journal Entry per settlement report with the CSV attached. The older planning doc confirms several operational defaults that were missing here, including NetSuite subsidiary/division/location/class, settlement ID idempotency, settlement-end-date checkpointing, existing Journal Entry skip behavior, sandbox testing, and failure email recipients. The requirements buddy call clarified that no settlement row should be ignored, debit/credit direction should follow the amount sign, and categorization must use a compound rule across `transaction-type`, `amount-type`, and `amount-description`. Successful settlements should not be stored in Gravity memory; NetSuite duplicate lookup by settlement ID is the source of truth for already-created Journal Entries. Gravity memory or Key Value Storage should only hold failed settlement attempts so later runs can retry. The remaining open decisions are the production File Cabinet folder and final client approval of catch-all categorization rules.
 
 ## Confirmed Understanding
 
@@ -26,7 +26,7 @@ The integration shape is clear: a daily scheduled Gravity workflow will poll Ama
 - Existing Journal Entry behavior: skip the settlement if a matching Journal Entry already exists
 - Processed-settlement state: do not store successful settlements in Gravity memory
 - Success source of truth: NetSuite lookup by settlement ID, preferably via `externalId` or a custom body field
-- Failure state: store failed settlement attempts in Gravity memory or Key Value Storage so a later run can retry with context
+- Failure state: store unresolved failed settlement attempts in one Gravity memory or Key Value Storage array under key `amazon_settlement_failures` so a later run can retry with context
 - Journal Entry grouping: one Journal Entry per settlement ID
 - Journal Entry line granularity: category only
 - No settlement row should be ignored unless the client explicitly approves that behavior
@@ -127,12 +127,12 @@ Sample file:
 ## Confirmed Category Mapping
 
 - Cash `1095`: net deposit total from the report header row `total-amount`, with debit/credit direction based on the amount sign.
-- Credit Accounts Receivable `1100`: `Order / ItemPrice / Principal` amounts. Tax should not be mixed into principal without a separate tax rule.
-- Debit Amazon Selling Fees `8606`: `Order / ItemFees`, fee corrections, Amazon fees such as deal performance or participation fees, and negative uncategorized or leftover amounts if the catch-all rule is approved by Lionel.
+- Credit Accounts Receivable `1100`: `Order / ItemPrice / Principal` amounts. Tax should not be mixed into principal and should not be posted to the Journal Entry.
+- Debit Amazon Selling Fees `8606`: `Order / ItemFees`, fee corrections, Amazon fees such as deal performance or participation fees, reimbursements, and positive or negative uncategorized or leftover amounts if the catch-all rule is approved by Lionel.
 - Debit Amazon Fulfillment Fees `7716`: `FBAFees` such as FBA per-unit fulfillment fees, customer return per-unit fees, removal order fees, and `other-transaction / Inbound Transportation Fee`.
 - Debit Amazon Storage Fee `7736`: `FBAFees` such as inventory storage fees, `AWD Storage Fee`, inbound placement service fees, and AWD storage, processing, or transportation fees.
 - Debit Refunds `6425`: any `transaction-type` that starts with `Refund`, including refund item prices, refund fees, and `Refund_Retrocharge`.
-- Positive uncategorized or leftover amounts may also route to Cash `1095` if the catch-all rule is approved by Lionel.
+- No settlement detail rows should route to Cash. Cash `1095` should only be the net deposit total from the report header.
 - All lines should carry Department `300`, NetSuite internal ID `34`.
 
 ## Requirements Buddy Call Notes
@@ -141,13 +141,13 @@ Sample file:
 - The sample report total `16311.96` matches the sum of the report lines, which confirms the parser should reconcile row totals back to the header total.
 - `Order / ItemPrice / Principal` should map to Accounts Receivable because invoices already exist for the sales; the Journal Entry lets accounting clear or reconcile the amount rather than count revenue twice.
 - Amazon tax lines need special handling. Amazon records tax collected and then records withheld tax because Amazon handles the tax. These should normally net to zero.
-- Tax should be validated with a compound key such as `amount-type = ItemPrice` plus `amount-description = Tax`, paired against related `ItemWithheldTax`. If tax and withheld tax do not net to zero, the workflow should raise a warning or failure.
+- Tax should be validated with a compound key such as `amount-type = ItemPrice` plus `amount-description = Tax`, paired against related `ItemWithheldTax`. If tax and withheld tax do not net to zero, the workflow should skip that settlement, save failure state, and alert.
 - Refunds are category-simple: anything with `transaction-type` beginning with `Refund` should go to the Refunds category. Negative refunds should post normally, and positive refund corrections should also remain in Refunds.
 - Storage fees are rare but should be identified by descriptions such as storage, inbound placement, and AWD storage/processing/transportation.
 - Fulfillment fees should be identified by descriptions such as fulfillment, shipping, per-unit fulfillment, customer return fulfillment fees, and removal order fees.
-- FBA Inventory Reimbursement was discussed as money returned by Amazon. The buddy suggested treating reimbursement-like positive amounts as Cash unless Lionel requests a separate account.
-- Catch-all guidance from the call: categorize everything that can be identified; if a leftover amount is negative, route it to Amazon Selling Fees; if a leftover amount is positive, route it to Cash. This should be shown to Lionel for approval before go-live.
-- A clearing or balancing account may still be needed, similar to Lionel's Shopify payout reconciliation workflow. The buddy recommended asking Lionel whether Amazon should use an equivalent clearing account concept.
+- FBA Inventory Reimbursement was discussed as money returned by Amazon. Current confirmed implementation treats reimbursement-like positive amounts as Amazon Selling Fees offsets so the Cash account remains equal to the settlement header payout.
+- Catch-all guidance after AR/Cash confirmation: categorize everything that can be identified; if a leftover amount is negative, route it to Amazon Selling Fees; if a leftover amount is positive, route it to Amazon Selling Fees as an offset. Do not route detail leftovers to Cash because Cash is already the settlement header payout.
+- A separate clearing or balancing account is not needed. Cash account `1095` / internal ID `1113` acts as the clearing line through the settlement header `total-amount`: principal credits Accounts Receivable, cash debits the net payout, and fee/refund lines balance the entry.
 
 ## Blocking Questions
 
@@ -175,7 +175,7 @@ Sample file:
    Why it matters: The call raised that the category mappings explain where amounts belong, but the Journal Entry may still need a clearing account concept similar to Lionel's Shopify payout reconciliation workflow.
    Implementation impact: This may require adding an additional clearing line or changing the cash/AR balancing logic so the Journal Entry posts cleanly.
 
-   A: Not confirmed. Ask Lionel whether Amazon should use an equivalent clearing account concept and which NetSuite account internal ID should be used.
+   A: None. Lionel confirmed no separate clearing/balancing account is needed. Cash `1095` / internal ID `1113` is the clearing line using the settlement header `total-amount`.
 
 ### Amount Logic
 
@@ -187,9 +187,9 @@ Sample file:
 
 6. How should Amazon tax lines be handled after validating that `ItemPrice / Tax` and related `ItemWithheldTax` net to zero?
    Why it matters: Amazon records tax and withheld tax because Amazon handles tax collection/remittance. These lines should normally cancel each other out, but ignoring them without validation can hide settlement mismatches.
-   Implementation impact: The workflow should use compound classification and validate tax nets to zero. If not zero, it should fail or warn the settlement. Lionel still needs to confirm whether zero-net tax lines should be omitted from the Journal Entry or posted to a specific tax account.
+   Implementation impact: The workflow should use compound classification and validate tax nets to zero. If not zero, it should skip the settlement, save failure state, and alert. If zero, tax rows should be omitted from the Journal Entry.
 
-   A: Not confirmed by Lionel. Requirements buddy said to ask what to do with tax; they may approve ignoring tax only after zero-net validation.
+   A: Confirmed by Lionel. Do not record tax. Validate that tax nets to zero; if not, skip the settlement and alert.
 
 7. What should happen if `total-amount` is negative, zero, or not equal to the final net settlement after aggregation?
    Why it matters: Some settlements may be reversals, reserves, or adjustments.
@@ -199,9 +199,9 @@ Sample file:
 
 8. Should Lionel approve the catch-all rule from the requirements buddy call?
    Why it matters: This changes whether unknown Amazon rows are posted automatically or held for review.
-   Implementation impact: Recommended call rule is to categorize everything identifiable first, then route negative leftovers to Amazon Selling Fees and positive leftovers to Cash. This should be sent to Lionel for approval before go-live.
+   Implementation impact: Current rule is to categorize everything identifiable first, then route negative leftovers to Amazon Selling Fees and positive leftovers to Amazon Selling Fees as offsets. This keeps Cash equal to the settlement header payout.
 
-   A: Requirements buddy recommends catch-all by sign. Lionel approval is still needed.
+   A: Use Amazon Selling Fees for both negative leftovers and positive leftover offsets. Lionel approval is still needed.
 
 ### Duplicate Protection
 
@@ -221,7 +221,7 @@ Sample file:
 
 11. If the Journal Entry is created but CSV attachment fails, how should the workflow retry?
     Why it matters: This prevents created but incomplete records from being silently skipped.
-    Implementation impact: Do not mark successful settlements in memory. If attachment fails, save failure context in memory or Key Value Storage, including settlement ID, report ID, report document ID, failure phase, error message, and the NetSuite Journal Entry ID if one was created. On the next run, the workflow should detect the existing Journal Entry in NetSuite and, if there is an unresolved attachment failure for that settlement, retry only the CSV attachment instead of creating a new Journal Entry or skipping completely. After a successful retry, clear the failure memory entry if Gravity supports delete; otherwise overwrite it with `status = resolved`.
+    Implementation impact: Do not mark successful settlements in memory. If attachment fails, save failure context in the shared `amazon_settlement_failures` array, including settlement ID, report ID, report document ID, failure phase, error message, and the NetSuite Journal Entry ID if one was created. On the next run, the workflow should detect the existing Journal Entry in NetSuite and, if there is an unresolved attachment failure array item for that settlement, retry only the CSV attachment instead of creating a new Journal Entry or skipping completely. After a successful retry, remove that settlement from the array and set the updated array back to `amazon_settlement_failures`.
 
     A: Save to memory only on failure so the workflow can retry later. Do not save processed settlements in memory.
 
@@ -292,9 +292,9 @@ Sample file:
 - Search NetSuite by `externalId` before creating a Journal Entry. Confirmed
 - Skip settlements when a matching Journal Entry already exists. Confirmed
 - Do not save processed settlements in Gravity memory. Confirmed
-- Save failed settlement attempts in Gravity memory or Key Value Storage so they can be retried later. Confirmed
+- Save failed settlement attempts in one Gravity memory or Key Value Storage array so they can be retried later. Confirmed
 - If CSV attachment fails after Journal Entry creation, store the created NetSuite Journal Entry ID with the failure context and retry attachment on a later run. Confirmed
-- After a successful retry, clear the failure memory entry or mark it as resolved. Confirmed
+- After a successful retry, remove the settlement from the shared failure array and set the updated array. Confirmed
 - Use NetSuite Execute Custom Code or SuiteScript for Journal Entry creation and CSV file attachment. Confirmed
 - Use `settlement-end-date` as the NetSuite posting date and Gravity checkpoint. Confirmed
 - Update the checkpoint after the full report page or batch succeeds. Confirmed
@@ -302,9 +302,9 @@ Sample file:
 - If a settlement fails inside the processing loop, log/email that settlement and continue with the next settlement. Confirmed
 - Send failure emails to `bruno@mindcloud.co`, `AMiller@lionel.com`, and `jjones@lionel.com`. Confirmed
 - Use memo format `Amazon Settlement {id}` unless another format is requested. Confirmed
-- Validate Amazon tax and withheld tax net to zero before omitting or separately handling tax lines. Needs Lionel confirmation for the final posting rule.
-- Route negative uncategorized leftovers to Amazon Selling Fees and positive uncategorized leftovers to Cash. Needs Lionel approval before go-live.
-- Confirm whether an Amazon clearing or balancing account is needed, following the same concept used in Lionel's Shopify payout reconciliation workflow.
+- Validate Amazon tax and withheld tax net to zero before omitting tax lines. Confirmed: do not post tax.
+- Route negative uncategorized leftovers to Amazon Selling Fees and positive uncategorized leftovers to Amazon Selling Fees as offsets. Needs Lionel approval before go-live.
+- Do not use a separate Amazon clearing or balancing account. Confirmed: Cash is the clearing line.
 
 ## Build-Readiness Checklist
 
@@ -317,9 +317,9 @@ Sample file:
 - [x] Accounts Receivable customer or entity requirement confirmed
 - [x] Invoice application behavior confirmed
 - [ ] Journal Entry line granularity versus order-id memo requirement confirmed
-- [ ] Clearing or balancing account confirmed
+- [x] Clearing or balancing account confirmed
 - [x] Amount sign handling confirmed
-- [ ] Tax posting/omission rule confirmed
+- [x] Tax posting/omission rule confirmed
 - [ ] Catch-all categorization rule approved by Lionel
 - [x] Idempotency and matching key confirmed
 - [x] Existing Journal Entry behavior confirmed

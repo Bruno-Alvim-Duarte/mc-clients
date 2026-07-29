@@ -5,8 +5,8 @@
 //
 // Replace mapBuildRuntimeConfig and mapParseSettlementReportTsv with actual Gravity step keys.
 
-const runtimeConfig = (input.mapBuildRuntimeConfig || [])[0] || {};
-const settlement = (input.mapParseSettlementReportTsv || [])[0] || {};
+const runtimeConfig = (input.mapF0FK || [])[0] || {};
+const settlement = (input.mapXTUO || [])[0] || {};
 
 const CONFIG = {
   subsidiaryId: "4",
@@ -17,8 +17,6 @@ const CONFIG = {
   currencyByCode: {
     USD: "1"
   },
-  // Optional. Leave null until Lionel confirms an Amazon clearing account.
-  balancingAccountId: null,
   moneyTolerance: 0.01
 };
 
@@ -29,7 +27,6 @@ if (runtimeConfig.netsuite) {
   CONFIG.classId = runtimeConfig.netsuite.classId || CONFIG.classId;
   CONFIG.departmentId = runtimeConfig.netsuite.departmentId || CONFIG.departmentId;
   CONFIG.currencyByCode = runtimeConfig.netsuite.currencyByCode || CONFIG.currencyByCode;
-  CONFIG.balancingAccountId = runtimeConfig.netsuite.balancingAccountId || CONFIG.balancingAccountId;
 }
 
 if (runtimeConfig.behavior) {
@@ -168,33 +165,6 @@ let totalCreditsAmount = totalCredits(lines);
 let balanceDifference = roundMoney(totalDebitsAmount - totalCreditsAmount);
 
 if (Math.abs(balanceDifference) > CONFIG.moneyTolerance) {
-  if (!CONFIG.balancingAccountId) {
-    throw new Error(
-      `Unbalanced Journal Entry for settlement ${settlement.settlementId}: debits ${totalDebitsAmount}, credits ${totalCreditsAmount}, difference ${balanceDifference}. Add confirmed CONFIG.balancingAccountId or fix mapping.`
-    );
-  }
-
-  const balancingLine = balanceDifference > 0
-    ? {
-        account: { id: String(CONFIG.balancingAccountId) },
-        credit: Math.abs(balanceDifference),
-        memo: `${settlement.memo} - Balancing line`,
-        ...commonLineFields
-      }
-    : {
-        account: { id: String(CONFIG.balancingAccountId) },
-        debit: Math.abs(balanceDifference),
-        memo: `${settlement.memo} - Balancing line`,
-        ...commonLineFields
-      };
-
-  lines.push(balancingLine);
-  totalDebitsAmount = totalDebits(lines);
-  totalCreditsAmount = totalCredits(lines);
-  balanceDifference = roundMoney(totalDebitsAmount - totalCreditsAmount);
-}
-
-if (Math.abs(balanceDifference) > CONFIG.moneyTolerance) {
   throw new Error(
     `Journal Entry remains unbalanced for settlement ${settlement.settlementId}: debits ${totalDebitsAmount}, credits ${totalCreditsAmount}, difference ${balanceDifference}`
   );
@@ -231,6 +201,7 @@ return [{
   totalCredits: totalCreditsAmount,
   lineCount: lines.length,
   categoryCount: (settlement.categories || []).length,
+  cashSummary: settlement.cashSummary,
   catchAllRows: settlement.catchAllRows || [],
   taxSummary: settlement.taxSummary,
   payload
