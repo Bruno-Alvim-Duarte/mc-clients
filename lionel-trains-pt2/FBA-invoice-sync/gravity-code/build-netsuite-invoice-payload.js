@@ -5,6 +5,26 @@ const resolved = input['netsuiteExecuteCustomCode0OJ2']?.[0] || {};
 const round = n => Math.round((Number(n) || 0) * 100) / 100;
 const isPlaceholder = v => !v || String(v).startsWith('{{');
 
+function toDateOnly(value) {
+  if (!value) return null;
+
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date.toISOString().slice(0, 10);
+}
+
+const amazonPurchaseDate = toDateOnly(order.purchaseDate);
+const fallbackTranDate = toDateOnly(input.system?.nowIso || new Date().toISOString());
+const memoParts = [`Amazon FBA order ${order.amazonOrderId}`];
+
+if (amazonPurchaseDate) {
+  memoParts.push(`Amazon order date ${amazonPurchaseDate}`);
+}
+
 const itemLines = (resolved.matched || []).map(line => ({
   kind: 'amazon_item',
   sku: line.sku,
@@ -109,8 +129,11 @@ return {
   class: config.netsuite.class,
   location: config.netsuite.location,
   shipmethod: config.netsuite.shipmethod,
-  tranDate: order.purchaseDate,
-  memo: `Amazon FBA order ${order.amazonOrderId}`,
+  tranDate: amazonPurchaseDate,
+  fallbackTranDate,
+  originalAmazonPurchaseDate: order.purchaseDate || null,
+  originalAmazonPurchaseDateOnly: amazonPurchaseDate,
+  memo: memoParts.join(' | '),
   otherRefNum: order.amazonOrderId,
   marketplaceId: order.marketplaceId,
   currency: order.currency,
