@@ -1,0 +1,937 @@
+workflow:
+  name: Amazon FBA to NetSuite - FBA Invoice Sync
+  id: AQIIbHK1mcx3
+  version: draft
+  isActive: false
+  publishedOn: 2026-07-27T13:29:16.000Z
+triggers:
+  - name: Schedule - Schedule - Run every 30 minutes, daily
+    type: schedule
+    message: Schedule - Run every 30 minutes, daily
+    schedule:
+      mode: interval
+      days:
+        - type: select
+          label: Sunday
+          value: 0
+        - type: select
+          label: Monday
+          value: 1
+        - type: select
+          label: Tuesday
+          value: 2
+        - type: select
+          label: Wednesday
+          value: 3
+        - type: select
+          label: Thursday
+          value: 4
+        - type: select
+          label: Friday
+          value: 5
+        - type: select
+          label: Saturday
+          value: 6
+      dayNames: []
+      intervalMs: 1800000
+steps:
+  - stepNumber: 1
+    name: Map - Map - Read Memory State and Retry Queue
+    input: No data imported
+    results: 1
+    type: map
+    code: |-
+      const memory = input.memory || {};
+      const checkpointKey = 'lionel_fba_invoice_sync_checkpoint';
+      const retryQueueKey = 'lionel_fba_invoice_retry_orders';
+      const retryFetchedOrdersKey = 'lionel_fba_invoice_retry_fetched_orders';
+
+      function parseArray(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (_) { return []; }
+        }
+        return [];
+      }
+
+      function parseObject(value) {
+        if (!value) return {};
+        if (typeof value === 'string') {
+          try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+          } catch (_) { return {}; }
+        }
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      }
+
+      const checkpoint = parseObject(memory[checkpointKey]);
+      const retryOrders = parseArray(memory[retryQueueKey])
+        .map(record => ({
+          ...record,
+          amazonOrderId: String(record.amazonOrderId || record.orderId || '').trim()
+        }))
+        .filter(record => record.amazonOrderId);
+
+      const retryFetchedOrders = parseArray(memory[retryFetchedOrdersKey])
+        .map(order => ({
+          ...order,
+          AmazonOrderId: String(order.AmazonOrderId || order.amazonOrderId || order.id || '').trim(),
+          isRetry: true
+        }))
+        .filter(order => order.AmazonOrderId);
+
+      return [{
+        checkpoint,
+        retryOrders,
+        retryFetchedOrders,
+        retryOrderIds: Array.from(new Set(retryOrders.map(r => r.amazonOrderId))),
+        keys: {
+          checkpointKey,
+          retryQueueKey,
+          retryFetchedOrdersKey
+        }
+      }];
+  - stepNumber: 2
+    name: Map - Map - Runtime Config and Amazon Query
+    input: Step 1
+    results: 1
+    type: map
+    code: |-
+      const state = input['map3HMU']?.[0] || {};
+      const checkpoint = state.checkpoint || {};
+      const updatedAfter = checkpoint.lastUpdatedAfter || '2026-05-01T00:00:00';
+      const wfArguments = input["workflowArguments"]
+
+      return [{
+        workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
+        recipients: 'bruno@mindcloud.co',
+        region: 'North America',
+        marketplaceScope: 'All marketplaces',
+        orderStatus: 'Shipped',
+        fulfillmentChannel: 'AFN',
+        updatedAfter,
+        updatedBefore: input.system?.nowIso || new Date().toISOString(),
+        pageSize: 50,
+        retryOrders: state.retryOrders || [],
+        retryOrderIds: state.retryOrderIds || [],
+        checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
+        retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+        retryFetchedOrdersKey: state.keys?.retryFetchedOrdersKey || 'lionel_fba_invoice_retry_fetched_orders',
+        netsuite: {
+          customerInternalId: wfArguments.customerID,
+          customerName: '9561387706 Amazon Customer',
+          subsidiary: '3',
+          divisionFieldId: 'csegdivision',
+          division: wfArguments.divisionID,
+          class: wfArguments.classID,
+          department: '34',
+          location: '152',
+          shipmethod: '47311'
+        },
+        chargeItems: {
+          giftWrap: wfArguments.giftWrapItemID,
+          promotionDiscount: wfArguments?.discountItemID
+        }
+      }];
+  - stepNumber: 3
+    name: Amazon Seller - Amazon - Get Recently Updated Shipped FBA Orders
+    results: 50
+    type: action
+    args:
+      - label: Order Status
+        value: "[Step 2: input[0].orderStatus]"
+      - label: Last Updated After
+        value: "[Step 2: input[0].updatedAfter]"
+      - label: Last Updated Before
+        value: "[Step 2: input[0].updatedBefore]"
+  - stepNumber: 4
+    name: Map - Map - Retry Orders To Fetch
+    input: Step 2
+    results: 10
+    type: map
+    code: |-
+      const config = input['map9QOY']?.[0] || {};
+      const seen = new Set();
+      return (config.retryOrders || []).filter(record => {
+        const id = String(record.amazonOrderId || '').trim();
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+  - stepNumber: 5
+    name: Iterate - Iterate - Loop through Retry Orders To Fetch
+    results: 1
+    type: loop
+    loopTarget:
+      stepNumber: 4
+      name: Map - Map - Retry Orders To Fetch
+    children:
+      - stepNumber: 6
+        name: Amazon Seller - Amazon - Get Retry FBA Order by Order Id
+        results: 1
+        type: action
+        args:
+          - label: Order Id
+            value: "[Step 5: input[0].amazonOrderId]"
+      - stepNumber: 7
+        name: Map - Map - Build Retry Fetched Orders Cache
+        input: Step 2, Step 6, Step 5
+        results: 1
+        type: map
+        code: |-
+          const config = input['map9QOY']?.[0] || {};
+          const retryRecord = input['iterateUR9J']?.[0] || {};
+          const raw = input['amazonSellerGetOrderGSDY'] || [];
+
+          const existing = (() => {
+            const value = input.memory?.['lionel_fba_invoice_retry_fetched_orders'];
+            if (!value) return [];
+            if (Array.isArray(value)) return value;
+            try {
+              const parsed = JSON.parse(value);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (_) { return []; }
+          })();
+
+          const order = raw.find(Boolean) || {};
+          const amazonOrderId = String(order.AmazonOrderId || order.amazonOrderId || retryRecord.amazonOrderId || '').trim();
+
+          const next = existing.filter(item =>
+            String(item.AmazonOrderId || item.amazonOrderId || '').trim() !== amazonOrderId
+          );
+
+          if (amazonOrderId) {
+            next.push({
+              ...order,
+              AmazonOrderId: amazonOrderId,
+              isRetry: true,
+              retryReason: retryRecord.reason || retryRecord.validationErrors || null,
+              retryLastAttemptAt: retryRecord.lastAttemptAt || null
+            });
+          }
+
+          return [{
+            key: config.retryFetchedOrdersKey || 'lionel_fba_invoice_retry_fetched_orders',
+            value: next
+          }];
+      - stepNumber: 8
+        name: Memory - Memory - Set Retry Fetched Orders Cache
+        results: 3
+        type: memory
+        memory:
+          - key: lionel_fba_invoice_retry_fetched_orders
+            savesOn: always
+  - stepNumber: 9
+    name: Map - Map - Merge and Deduplicate Amazon Orders
+    input: Step 1, Step 2, Step 3
+    results: 50
+    type: map
+    code: |-
+      const config = input['map9QOY']?.[0] || {};
+        const currentOrders = input['amazonSellerListOrdersKFHW'] || [];
+        const memoryState = input['map3HMU']?.[0] || {};
+        const cachedRetryOrders = Array.isArray(memoryState.retryFetchedOrders)
+          ? memoryState.retryFetchedOrders
+          : [];
+
+        const retryIds = new Set(config.retryOrderIds || []);
+
+        const retrySources = cachedRetryOrders.filter(order =>
+          retryIds.has(
+            String(order.AmazonOrderId || order.amazonOrderId || order.id || '').trim()
+          )
+        );
+
+        const byId = new Map();
+
+        for (const sourceOrder of [...currentOrders, ...retrySources]) {
+          const id = String(
+            sourceOrder.AmazonOrderId ||
+            sourceOrder.amazonOrderId ||
+            sourceOrder.id ||
+            ''
+          ).trim();
+
+          if (!id) continue;
+
+          const status = String(
+            sourceOrder.OrderStatus ||
+            sourceOrder.orderStatus ||
+            ''
+          ).toLowerCase();
+
+          const channel = String(
+            sourceOrder.FulfillmentChannel ||
+            sourceOrder.fulfillmentChannel ||
+            ''
+          ).toUpperCase();
+
+          if (status && status !== 'shipped') continue;
+          if (channel && channel !== 'AFN') continue;
+
+          const isRetry = retryIds.has(id) || Boolean(sourceOrder.isRetry);
+
+          byId.set(id, {
+            ...sourceOrder,
+            AmazonOrderId: id,
+            isRetry,
+          });
+        }
+
+        return Array.from(byId.values()).sort((a, b) =>
+          String(a.LastUpdateDate || a.lastUpdateDate || '').localeCompare(
+            String(b.LastUpdateDate || b.lastUpdateDate || '')
+          ) ||
+          String(a.AmazonOrderId).localeCompare(String(b.AmazonOrderId))
+        );
+  - stepNumber: 10
+    name: Iterate - Iterate - Loop through Amazon FBA Orders
+    type: loop
+    loopTarget:
+      stepNumber: 9
+      name: Map - Map - Merge and Deduplicate Amazon Orders
+    children:
+      - stepNumber: 11
+        name: Amazon Seller - Amazon - Get Order Items
+        results: 1
+        type: action
+        args:
+          - label: Order Id
+            value: "[Step 10: input[0].amazonOrderId]"
+      - stepNumber: 12
+        name: Map - Map - Normalize Amazon Order
+        input: Step 2, Step 10, Step 11
+        results: 1
+        type: map
+        code: |-
+          const config = input['map9QOY']?.[0] || {};
+          const order = input['iterate7INU']?.[0] || {};
+          const raw = input['amazonSellerGetOrderItemsNFJ8'] || [];
+
+          const itemRows = raw.flatMap(x =>
+            Array.isArray(x?.OrderItems) ? x.OrderItems :
+            Array.isArray(x?.orderItems) ? x.orderItems :
+            Array.isArray(x?.items) ? x.items :
+            Array.isArray(x) ? x : [x]
+          ).filter(Boolean);
+
+          const money = v => Number(v?.Amount ?? v?.amount ?? v ?? 0) || 0;
+          const round = n => Math.round((Number(n) || 0) * 100) / 100;
+          const amazonOrderId = String(order.AmazonOrderId || order.amazonOrderId || '').trim();
+
+          const lines = itemRows.map(item => {
+            const quantity = Number(item.QuantityOrdered ?? item.quantityOrdered ?? item.QuantityShipped ?? item.quantity ?? 0) || 0;
+            return {
+              amazonOrderItemId: String(item.OrderItemId || item.orderItemId || ''),
+              sku: String(item.SellerSKU || item.sellerSKU || item.SKU || item.sku || '').trim(),
+              title: item.Title || item.title || '',
+              asin: item.ASIN || item.asin || '',
+              quantity,
+              itemPrice: round(money(item.ItemPrice || item.itemPrice)),
+              itemTax: round(money(item.ItemTax || item.itemTax)),
+              shippingPrice: round(money(item.ShippingPrice || item.shippingPrice)),
+              shippingTax: round(money(item.ShippingTax || item.shippingTax)),
+              shippingDiscount: round(money(item.ShippingDiscount || item.shippingDiscount)),
+              promotionDiscount: round(money(item.PromotionDiscount || item.promotionDiscount)),
+              giftWrapPrice: round(money(item.GiftWrapPrice || item.giftWrapPrice)),
+              giftWrapTax: round(money(item.GiftWrapTax || item.giftWrapTax))
+            };
+          }).filter(line => line.quantity > 0);
+
+          const validationErrors = [];
+          if (!amazonOrderId) validationErrors.push('Missing AmazonOrderId.');
+          if (!lines.length) validationErrors.push(`No order items returned for Amazon order ${amazonOrderId || '(unknown)'}.`);
+          for (const line of lines) {
+            if (!line.sku) validationErrors.push(`Missing Seller SKU for Amazon order item ${line.amazonOrderItemId || '(unknown)'}.`);
+            if (line.itemPrice === 0) validationErrors.push(`Zero item price for SKU ${line.sku || '(missing sku)'}.`);
+          }
+
+          return [{
+            amazonOrderId,
+            marketplaceId: order.MarketplaceId || order.marketplaceId || null,
+            purchaseDate: order.PurchaseDate || order.purchaseDate || null,
+            lastUpdateDate: order.LastUpdateDate || order.lastUpdateDate || null,
+            currency: order.OrderTotal?.CurrencyCode || order.orderTotal?.currencyCode || itemRows[0]?.ItemPrice?.CurrencyCode || null,
+            isRetry: Boolean(order.isRetry),
+            customerInternalId: config.netsuite.customerInternalId,
+            lines,
+            validationErrors,
+            hasRequiredData: validationErrors.length === 0
+          }];
+      - stepNumber: 13
+        name: If/Else - If/Else - Order Has Required Data
+        results: 1
+        type: conditional
+        condition: "[Step 12: input[0].hasRequiredData] = true"
+        branches:
+          "false":
+            - stepNumber: 32
+              name: Map - Map - Build Invalid Order Alert
+              input: Step 2, Step 12
+              results: 1
+              type: map
+              code: |-
+                const config = input['map9QOY']?.[0] || {};
+                const order = input['mapQC7W']?.[0] || {};
+
+                return [{
+                  to: config.recipients,
+                  subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Invalid order ${order.amazonOrderId || '(unknown)'}`,
+                  body: `Amazon FBA order ${order.amazonOrderId || '(unknown)'} could not be normalized and was added to retry memory.\n\nReason(s):\n${(order.validationErrors || []).map(e => '- ' + e).join('\n')}\n\nNo NetSuite invoice was created.`
+                }];
+            - stepNumber: 33
+              name: "Flow Control - Flow Control - Skip: Invalid Amazon Order"
+              results: 1
+              type: action
+              args:
+                - label: Action
+                  value: doNothing
+                - label: Emit Log
+                  value: Yes
+                - label: Log Type
+                  value: warning
+                - label: Log Message
+                  value: "[Amazon] Skipped Amazon FBA order "
+                - label: Send Email
+                  value: Yes
+                - label: Email To
+                  value: "[Step 32: input[0].to]"
+                - label: Email Subject
+                  value: "[Step 32: input[0].subject]"
+                - label: Email Body
+                  value: "[Step 32: input[0].body]"
+          "true":
+            - stepNumber: 14
+              name: Netsuite - NetSuite - Find Existing Invoice
+              type: action
+            - stepNumber: 15
+              name: If/Else - If/Else - No Existing Invoice
+              results: 1
+              type: conditional
+              condition: "[Step 14: response[0].id] empty null"
+              branches:
+                "false":
+                  - stepNumber: 31
+                    name: "Flow Control - Flow Control - Skip: Existing Invoice"
+                    type: action
+                    args:
+                      - label: Action
+                        value: doNothing
+                      - label: Emit Log
+                        value: Yes
+                      - label: Log Type
+                        value: info
+                      - label: Log Message
+                        value: "[NetSuite] Found existing invoice "
+                "true":
+                  - stepNumber: 16
+                    name: Netsuite - NetSuite - Resolve Invoice Items by SKU
+                    results: 1
+                    type: action
+                  - stepNumber: 17
+                    name: Map - Map - Build NetSuite Invoice Payload
+                    input: Step 2, Step 12, Step 16
+                    results: 1
+                    type: map
+                    code: |
+                      const config = input['map9QOY']?.[0] || {};
+                      const order = input['mapQC7W']?.[0] || {};
+                      const resolved = input['netsuiteExecuteCustomCode0OJ2']?.[0] || {};
+
+                      const round = n => Math.round((Number(n) || 0) * 100) / 100;
+                      const isPlaceholder = v => !v || String(v).startsWith('{{');
+
+                      function toDateOnly(value) {
+                        if (!value) return null;
+
+                        const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+                        if (match) return match[1];
+
+                        const date = new Date(value);
+                        if (Number.isNaN(date.getTime())) return null;
+
+                        return date.toISOString().slice(0, 10);
+                      }
+
+                      const amazonPurchaseDate = toDateOnly(order.purchaseDate);
+                      const fallbackTranDate = toDateOnly(input.system?.nowIso || new Date().toISOString());
+                      const memoParts = [`Amazon FBA order ${order.amazonOrderId}`];
+
+                      if (amazonPurchaseDate) {
+                        memoParts.push(`Amazon order date ${amazonPurchaseDate}`);
+                      }
+
+                      const itemLines = (resolved.matched || []).map(line => ({
+                        kind: 'amazon_item',
+                        sku: line.sku,
+                        title: line.title,
+                        itemInternalId: line.netsuiteItemId,
+                        quantity: line.quantity,
+                        rate: round(line.itemPrice / Math.max(line.quantity, 1)),
+                        amount: round(line.itemPrice),
+                        amazonOrderItemId: line.amazonOrderItemId,
+                      }));
+
+                      const totals = (order.lines || []).reduce(
+                        (acc, line) => {
+                          acc.shipping += line.shippingPrice || 0;
+                          acc.shippingTax += line.shippingTax || 0;
+                          acc.itemTax += line.itemTax || 0;
+                          acc.giftWrap += line.giftWrapPrice || 0;
+                          acc.giftWrapTax += line.giftWrapTax || 0;
+                          acc.discounts +=
+                            (line.promotionDiscount || 0) +
+                            (line.shippingDiscount || 0);
+
+                          return acc;
+                        },
+                        {
+                          shipping: 0,
+                          shippingTax: 0,
+                          itemTax: 0,
+                          giftWrap: 0,
+                          giftWrapTax: 0,
+                          discounts: 0,
+                        }
+                      );
+
+                      const shippingCost = round(totals.shipping);
+
+                      const chargeLines = [];
+                      const missingChargeMappings = [];
+
+                      function addCharge(kind, itemId, amount, description) {
+                        const rounded = round(amount);
+
+                        if (Math.abs(rounded) < 0.005) return;
+
+                        if (isPlaceholder(itemId)) {
+                          missingChargeMappings.push(kind);
+                          return;
+                        }
+
+                        chargeLines.push({
+                          kind,
+                          itemInternalId: String(itemId),
+                          quantity: 1,
+                          rate: rounded,
+                          amount: rounded,
+                          description,
+                        });
+                      }
+
+                      addCharge(
+                        'giftWrap',
+                        config.chargeItems.giftWrap,
+                        totals.giftWrap,
+                        `Amazon gift wrap for order ${order.amazonOrderId}`
+                      );
+
+                      addCharge(
+                        'promotionDiscount',
+                        config.chargeItems.promotionDiscount,
+                        -Math.abs(totals.discounts),
+                        `Amazon discounts for order ${order.amazonOrderId}`
+                      );
+
+                      const validationErrors = [];
+
+                      if (!resolved.hasAllItems) {
+                        validationErrors.push(
+                          `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}.`
+                        );
+                      }
+
+                      if (missingChargeMappings.length) {
+                        validationErrors.push(
+                          `Missing NetSuite charge item mappings: ${missingChargeMappings.join(', ')}.`
+                        );
+                      }
+
+                      if (!itemLines.length) {
+                        validationErrors.push('No invoice item lines were created.');
+                      }
+
+                      return {
+                        canCreate: validationErrors.length === 0,
+                        validationErrors,
+                        amazonOrderId: order.amazonOrderId,
+                        externalId: order.amazonOrderId,
+                        entity: config.netsuite.customerInternalId,
+                        subsidiary: config.netsuite.subsidiary,
+                        divisionFieldId: config.netsuite.divisionFieldId,
+                        division: config.netsuite.division,
+                        department: config.netsuite.department,
+                        class: config.netsuite.class,
+                        location: config.netsuite.location,
+                        shipmethod: config.netsuite.shipmethod,
+                        tranDate: amazonPurchaseDate,
+                        fallbackTranDate,
+                        originalAmazonPurchaseDate: order.purchaseDate || null,
+                        originalAmazonPurchaseDateOnly: amazonPurchaseDate,
+                        memo: memoParts.join(' | '),
+                        otherRefNum: order.amazonOrderId,
+                        marketplaceId: order.marketplaceId,
+                        currency: order.currency,
+                        shippingCost,
+                        itemLines,
+                        chargeLines,
+                        totals,
+                      };
+                  - stepNumber: 18
+                    name: If/Else - If/Else - Invoice Payload Can Be Created
+                    results: 1
+                    type: conditional
+                    condition: "[Step 17: input[0].canCreate] = true"
+                    branches:
+                      "false":
+                        - stepNumber: 27
+                          name: Map - Map - Build Mismatch Alert
+                          input: Step 2, Step 12, Step 17
+                          results: 1
+                          type: map
+                          code: |-
+                            const config = input['map9QOY']?.[0] || {};
+                            const order = input['mapQC7W']?.[0] || {};
+                            const payload = input['mapL4FH']?.[0] || {};
+
+                            return [{
+                              to: config.recipients,
+                              subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
+                              body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
+                            }];
+                        - stepNumber: 28
+                          name: Map - Map - Build Retry Queue For Mismatch
+                          input: Step 2, Step 17
+                          results: 1
+                          type: map
+                          code: |-
+                            const config = input['map9QOY']?.[0] || {};
+                            const source = input['mapL4FH']?.[0] || {};
+                            const amazonOrderId = String(source.amazonOrderId || source.AmazonOrderId || '').trim();
+
+                            const current = (() => {
+                              const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                              if (!value) return [];
+                              if (Array.isArray(value)) return value;
+                              try {
+                                const parsed = JSON.parse(value);
+                                return Array.isArray(parsed) ? parsed : [];
+                              } catch (_) { return []; }
+                            })();
+
+                            const withoutCurrent = current.filter(record =>
+                              String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
+                            );
+
+                            if (amazonOrderId) {
+                              withoutCurrent.push({
+                                amazonOrderId,
+                                reason: source.validationErrors || [],
+                                lastAttemptAt: input.system?.nowIso || new Date().toISOString()
+                              });
+                            }
+
+                            return [{
+                              key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+                              value: withoutCurrent
+                            }];
+                        - stepNumber: 29
+                          name: Memory - Memory - Set Retry Queue For Mismatch
+                          type: memory
+                          memory:
+                            - key: lionel_fba_invoice_retry_orders
+                              savesOn: always
+                        - stepNumber: 30
+                          name: Flow Control - Flow Control - Email and Skip Mismatch
+                          type: action
+                          args:
+                            - label: Action
+                              value: doNothing
+                            - label: Email To
+                              value: "[Step 27: input[0].to]"
+                            - label: Emit Log
+                              value: Yes
+                            - label: Log Type
+                              value: warning
+                            - label: Email Body
+                              value: "[Step 27: input[0].body]"
+                            - label: Send Email
+                              value: Yes
+                            - label: Log Message
+                              value: "[NetSuite] Skipped Amazon FBA order "
+                            - label: Email Subject
+                              value: "[Step 27: input[0].subject]"
+                      "true":
+                        - stepNumber: 19
+                          name: Netsuite - NetSuite - Create Invoice
+                          results: 1
+                          type: action
+                        - stepNumber: 20
+                          name: If/Else - If Success = true
+                          type: conditional
+                          condition: "[Step 19: input[0].success] = true"
+                          branches:
+                            "false":
+                              - stepNumber: 23
+                                name: Map - Map - Build Failed Invoice Alert
+                                input: Step 2, Step 12, Step 19
+                                results: 1
+                                type: map
+                                code: |-
+                                  const config = input['map9QOY']?.[0] || {};
+                                  const order = input['mapQC7W']?.[0] || {};
+                                  const invoiceResult = input['netsuiteExecuteCustomCodeDMG7']?.[0] || {};
+
+                                  const errorDetails = invoiceResult?.error?.message
+                                    || invoiceResult?.message
+                                    || invoiceResult.error?.code
+                                    || 'Unknown error';
+
+                                  // Detect if the error is likely an inventory detail / quantity issue
+                                  const errorStr = String(errorDetails).toLowerCase();
+                                  const isLikelyInventoryIssue =
+                                    errorStr.includes('inventory detail') ||
+                                    errorStr.includes('inventory number') ||
+                                    errorStr.includes('lot number');
+
+                                  // Build a summary of the items in this order (SKU + qty)
+                                  const orderLines = (order.lines || []);
+                                  const linesSummary = orderLines.length
+                                    ? orderLines.map(l => `- SKU: ${l.sku || '(unknown)'}, Qty: ${l.quantity}`).join('\n')
+                                    : '(no line items available)';
+
+                                  // Friendly explanation for the most common scenario
+                                  const inventoryTip = isLikelyInventoryIssue
+                                    ? [
+                                        '',
+                                        'What this most likely means:',
+                                        'The Amazon FBA location in NetSuite does not have enough available quantity for one or more items in this order.',
+                                        '',
+                                        'How to fix:',
+                                        '1. Open NetSuite and navigate to the inventory for the item(s) listed above.',
+                                        '2. Check the available quantity at the Amazon FBA location.',
+                                        '3. If the quantity is insufficient, create an Inventory Adjustment or Transfer to ensure the Amazon FBA location has enough stock to cover the order quantities.',
+                                        '4. Once the inventory is corrected, the invoice will be retried automatically on the next sync run.',
+                                      ].join('\n')
+                                    : '';
+
+                                  const bodyParts = [
+                                    `NetSuite invoice creation failed for Amazon FBA order ${order.amazonOrderId}.`,
+                                    '',
+                                    `Error: ${errorDetails}`,
+                                    '',
+                                    'Items in this order:',
+                                    linesSummary,
+                                  ];
+
+                                  if (inventoryTip) {
+                                    bodyParts.push(inventoryTip);
+                                  }
+
+                                  bodyParts.push(
+                                    '',
+                                    `Marketplace: ${order.marketplaceId || ''}`,
+                                    `Purchase Date: ${order.purchaseDate || ''}`,
+                                    `Last Update Date: ${order.lastUpdateDate || ''}`,
+                                    '',
+                                    'The order has been added to the retry queue for the next run.'
+                                  );
+
+                                  return [{
+                                    to: config.recipients,
+                                    subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Failed to create invoice for order ${order.amazonOrderId}`,
+                                    body: bodyParts.join('\n'),
+                                  }];
+                              - stepNumber: 24
+                                name: Map - Map - Build Retry Queue For Failed Invoice
+                                input: Step 2, Step 19
+                                results: 1
+                                type: map
+                                code: |-
+                                  const config = input['map9QOY']?.[0] || {};
+                                  const invoiceResult = input['netsuiteExecuteCustomCodeDMG7']?.[0] || {};
+                                  const amazonOrderId = String(invoiceResult.amazonOrderId || '').trim();
+
+                                  const current = (() => {
+                                    const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                                    if (!value) return [];
+                                    if (Array.isArray(value)) return value;
+                                    try {
+                                      const parsed = JSON.parse(value);
+                                      return Array.isArray(parsed) ? parsed : [];
+                                    } catch (_) { return []; }
+                                  })();
+
+                                  const withoutCurrent = current.filter(record =>
+                                    String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
+                                  );
+
+                                  if (amazonOrderId) {
+                                    const errorDetails = invoiceResult?.error?.message
+                                      || invoiceResult?.error?.code
+                                      || 'Invoice creation failed';
+
+                                    withoutCurrent.push({
+                                      amazonOrderId,
+                                      reason: [`NetSuite invoice creation failed: ${errorDetails}`],
+                                      lastAttemptAt: input.system?.nowIso || new Date().toISOString()
+                                    });
+                                  }
+
+                                  return [{
+                                    key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+                                    value: withoutCurrent
+                                  }];
+                              - stepNumber: 25
+                                name: Memory - Memory - Set Retry Queue For Failed Invoice
+                                type: memory
+                                memory:
+                                  - key: lionel_fba_invoice_retry_orders
+                                    savesOn: always
+                              - stepNumber: 26
+                                name: Flow Control - Flow Control - Email and Skip Failed Invoice
+                                type: action
+                                args:
+                                  - label: Action
+                                    value: doNothing
+                                  - label: Email To
+                                    value: "[Step 23: input[0].to]"
+                                  - label: Emit Log
+                                    value: Yes
+                                  - label: Log Type
+                                    value: warning
+                                  - label: Email Body
+                                    value: "[Step 23: input[0].body]"
+                                  - label: Send Email
+                                    value: Yes
+                                  - label: Log Message
+                                    value: "[NetSuite] Failed to create invoice for Amazon FBA order "
+                                  - label: Email Subject
+                                    value: "[Step 23: input[0].subject]"
+                            "true":
+                              - stepNumber: 21
+                                name: Map - Map - Build Retry Queue Without Created Invoice
+                                input: Step 2, Step 17
+                                results: 1
+                                type: map
+                                code: |-
+                                  const config = input['map9QOY']?.[0] || {};
+                                  const order = input['mapL4FH']?.[0] || {};
+                                  const amazonOrderId = String(order.amazonOrderId || order.AmazonOrderId || '').trim();
+
+                                  const current = (() => {
+                                    const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                                    if (!value) return [];
+                                    if (Array.isArray(value)) return value;
+                                    try {
+                                      const parsed = JSON.parse(value);
+                                      return Array.isArray(parsed) ? parsed : [];
+                                    } catch (_) { return []; }
+                                  })();
+
+                                  return [{
+                                    key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+                                    value: current.filter(record =>
+                                      String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
+                                    )
+                                  }];
+                              - stepNumber: 22
+                                name: Memory - Memory - Set Retry Queue After Created Invoice
+                                type: memory
+                                memory:
+                                  - key: lionel_fba_invoice_retry_orders
+                                    savesOn: always
+  - stepNumber: 34
+    name: Map - Map - Build Next Checkpoint
+    input: Step 2, Step 9, Step 1
+    results: 1
+    type: map
+    code: |-
+      const config = input['map9QOY']?.[0] || {};
+      const orders = input['map7D02'] || [];
+      const memoryState = input['map3HMU']?.[0] || {};
+      const previousCheckpoint = memoryState.checkpoint || {};
+
+      // Read the retry queue from memory (updated during the loop by Steps 26/30)
+      const retryQueue = (() => {
+        const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (_) { return []; }
+      })();
+
+      // Build set of order IDs currently in the retry queue
+      const retryOrderIds = new Set(
+        retryQueue.map(r => String(r.amazonOrderId || r.orderId || '').trim()).filter(Boolean)
+      );
+
+      // Build set of batch order IDs
+      const batchOrderIds = orders.map(o =>
+        String(o.AmazonOrderId || o.amazonOrderId || '').trim()
+      ).filter(Boolean);
+
+      // Count how many batch orders are NOT in the retry queue
+      // (i.e., orders that were successfully processed or skipped as existing)
+      const nonRetryCount = batchOrderIds.filter(id => !retryOrderIds.has(id)).length;
+
+      // If no orders in the batch, or every batch order ended up in the retry queue,
+      // do NOT advance the checkpoint — preserve the previous one so the same window
+      // is re-processed on the next run.
+      const allFailed = batchOrderIds.length > 0 && nonRetryCount === 0;
+
+      const dates = orders
+        .map(o => o.LastUpdateDate || o.lastUpdateDate)
+        .filter(Boolean)
+        .sort();
+
+      const nextCheckpoint = dates.length ? dates[dates.length - 1] : config.updatedAfter;
+
+      const effectiveCheckpoint = allFailed
+        ? (previousCheckpoint.lastUpdatedAfter || config.updatedAfter)
+        : nextCheckpoint;
+
+      return [{
+        key: config.checkpointKey,
+        value: {
+          lastUpdatedAfter: effectiveCheckpoint,
+          lastOrderCount: orders.length,
+          allFailed,
+          advancedCheckpoint: !allFailed,
+          updatedAt: input.system?.nowIso || new Date().toISOString()
+        }
+      }];
+  - stepNumber: 35
+    name: Memory - Memory - Set Checkpoint
+    results: 3
+    type: memory
+    memory:
+      - key: key
+        savesOn: always
+  - stepNumber: 36
+    name: Memory - Memory - Reset Retry Fetched Orders Cache
+    results: 3
+    type: memory
+    memory:
+      - key: lionel_fba_invoice_retry_fetched_orders
+        savesOn: always
+  - stepNumber: 37
+    name: Flow Control - Flow Control - Log Batch Complete
+    type: action
+    args:
+      - label: Action
+        value: doNothing
+      - label: Emit Log
+        value: Yes
+      - label: Log Type
+        value: info
+      - label: Log Message
+        value: "[Amazon] Completed FBA invoice sync batch. Checkpoint advanced: "
