@@ -8,8 +8,16 @@ const isPlaceholder = v => !v || String(v).startsWith('{{');
 function toDateOnly(value) {
   if (!value) return null;
 
-  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
-  if (match) return match[1];
+  const raw = String(value).trim();
+  const firstTen = raw.slice(0, 10);
+
+  if (
+    firstTen.length === 10 &&
+    firstTen.charAt(4) === '-' &&
+    firstTen.charAt(7) === '-'
+  ) {
+    return firstTen;
+  }
 
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -17,8 +25,17 @@ function toDateOnly(value) {
   return date.toISOString().slice(0, 10);
 }
 
+function firstDayOfMonthDateOnly(value) {
+  const dateOnly = toDateOnly(value);
+  if (!dateOnly) return null;
+
+  return `${dateOnly.slice(0, 7)}-01`;
+}
+
 const amazonPurchaseDate = toDateOnly(order.purchaseDate);
-const fallbackTranDate = toDateOnly(input.system?.nowIso || new Date().toISOString());
+const fallbackTranDate = firstDayOfMonthDateOnly(
+  input.system?.nowIso || new Date().toISOString()
+);
 const memoParts = [`Amazon FBA order ${order.amazonOrderId}`];
 
 if (amazonPurchaseDate) {

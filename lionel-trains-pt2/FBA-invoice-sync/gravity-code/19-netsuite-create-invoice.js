@@ -9,22 +9,52 @@ function setIf(rec, fieldId, value) {
   }
 }
 
-function parseDateOnly(value) {
+function toNetSuiteDateText(value) {
   if (!value) return null;
 
-  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (match) {
-    return new Date(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3])
-    );
+  if (value instanceof Date) {
+    return [
+      String(value.getUTCMonth() + 1),
+      String(value.getUTCDate()),
+      String(value.getUTCFullYear()),
+    ].join('/');
   }
 
-  const date = new Date(value);
-  if (isNaN(date.getTime())) return null;
+  const raw = String(value).trim();
+  const firstTen = raw.slice(0, 10);
 
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (
+    firstTen.length === 10 &&
+    firstTen.charAt(4) === '-' &&
+    firstTen.charAt(7) === '-'
+  ) {
+    const parts = firstTen.split('-');
+
+    return [
+      String(Number(parts[1])),
+      String(Number(parts[2])),
+      parts[0],
+    ].join('/');
+  }
+
+  if (raw.indexOf('/') !== -1) {
+    return raw;
+  }
+
+  return null;
+}
+
+function setDateTextIf(rec, fieldId, value) {
+  const dateText = toNetSuiteDateText(value);
+
+  if (dateText) {
+    rec.setText({
+      fieldId,
+      text: dateText,
+    });
+  }
+
+  return dateText;
 }
 
 function isClosedPeriodDateError(error) {
@@ -36,7 +66,93 @@ function isClosedPeriodDateError(error) {
   );
 }
 
-function createAndSaveInvoice(tranDateValue) {
+function getFieldTextSafe(rec, fieldId) {
+  try {
+    return rec.getText({ fieldId });
+  } catch (error) {
+    return null;
+  }
+}
+
+function getFieldValueSafe(rec, fieldId) {
+  try {
+    const value = rec.getValue({ fieldId });
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    return value === undefined ? null : value;
+  } catch (error) {
+    return null;
+  }
+}
+
+function buildDateDiagnostics(rec, attemptName, inputTranDateValue, tranDateText) {
+  return {
+    attemptName,
+    inputTranDateValue,
+    inputTranDateType: Object.prototype.toString.call(inputTranDateValue),
+    inputTranDateString: String(inputTranDateValue),
+    tranDateText,
+    recordTranDateText: getFieldTextSafe(rec, 'trandate'),
+    recordTranDateValue: getFieldValueSafe(rec, 'trandate'),
+    postingPeriodText: getFieldTextSafe(rec, 'postingperiod'),
+    postingPeriodValue: getFieldValueSafe(rec, 'postingperiod'),
+  };
+}
+
+function findOpenPostingPeriodForDate(dateText) {
+  if (!dateText || typeof search === 'undefined') {
+    return null;
+  }
+
+  try {
+    const accountingPeriodSearch = search.create({
+      type: 'accountingperiod',
+      filters: [
+        ['startdate', 'onorbefore', dateText],
+        'AND',
+        ['enddate', 'onorafter', dateText],
+        'AND',
+        ['isyear', 'is', 'F'],
+        'AND',
+        ['isquarter', 'is', 'F'],
+        'AND',
+        ['closed', 'is', 'F'],
+      ],
+      columns: [
+        search.createColumn({ name: 'internalid' }),
+        search.createColumn({ name: 'periodname' }),
+        search.createColumn({ name: 'startdate' }),
+        search.createColumn({ name: 'enddate' }),
+        search.createColumn({ name: 'closed' }),
+      ],
+    });
+
+    let match = null;
+
+    accountingPeriodSearch.run().each(function(result) {
+      match = {
+        id: String(result.getValue({ name: 'internalid' })),
+        name: result.getValue({ name: 'periodname' }),
+        startDate: result.getValue({ name: 'startdate' }),
+        endDate: result.getValue({ name: 'enddate' }),
+        closed: result.getValue({ name: 'closed' }),
+      };
+
+      return false;
+    });
+
+    return match;
+  } catch (error) {
+    return {
+      error: error.message,
+    };
+  }
+}
+
+function createAndSaveInvoice(tranDateValue, attemptName) {
   const invoice = record.create({
     type: record.Type.INVOICE,
     isDynamic: true,
@@ -52,9 +168,11 @@ function createAndSaveInvoice(tranDateValue) {
   setIf(invoice, 'memo', payload.memo);
   setIf(invoice, 'otherrefnum', payload.otherRefNum);
 
-  const tranDate = parseDateOnly(tranDateValue);
-  if (tranDate) {
-    setIf(invoice, 'trandate', tranDate);
+  const tranDateText = setDateTextIf(invoice, 'trandate', tranDateValue);
+  const postingPeriod = findOpenPostingPeriodForDate(tranDateText);
+
+  if (postingPeriod && postingPeriod.id) {
+    setIf(invoice, 'postingperiod', postingPeriod.id);
   }
 
   if (Number(payload.shippingCost || 0) > 0) {
@@ -134,19 +252,41 @@ function createAndSaveInvoice(tranDateValue) {
     });
   }
 
-  const id = invoice.save({
-    enableSourcing: true,
-    ignoreMandatoryFields: false,
-  });
+  const dateDiagnostics = buildDateDiagnostics(
+    invoice,
+    attemptName,
+    tranDateValue,
+    tranDateText
+  );
+  dateDiagnostics.openPostingPeriodLookup = postingPeriod;
+
+  let id;
+
+  try {
+    id = invoice.save({
+      enableSourcing: true,
+      ignoreMandatoryFields: false,
+    });
+  } catch (error) {
+    error.dateDiagnostics = dateDiagnostics;
+    throw error;
+  }
 
   return {
     id,
     lines,
-    tranDate,
+    tranDateText,
+    dateDiagnostics,
   };
 }
 
 function execute() {
+  let usedClosedPeriodFallback = false;
+  let originalDateError = null;
+  const attemptedTranDate = payload && payload.tranDate;
+  const attemptedFallbackTranDate = payload && payload.fallbackTranDate;
+  const dateAttemptDiagnostics = [];
+
   try {
     if (!payload?.canCreate) {
       throw new Error(
@@ -158,19 +298,32 @@ function execute() {
     }
 
     let saveResult;
-    let usedClosedPeriodFallback = false;
-    let originalDateError = null;
 
     try {
-      saveResult = createAndSaveInvoice(payload.tranDate);
+      saveResult = createAndSaveInvoice(payload.tranDate, 'actual_transaction_date');
+      dateAttemptDiagnostics.push(saveResult.dateDiagnostics);
     } catch (error) {
+      if (error.dateDiagnostics) {
+        dateAttemptDiagnostics.push(error.dateDiagnostics);
+      }
+
       if (!payload.fallbackTranDate || !isClosedPeriodDateError(error)) {
         throw error;
       }
 
       usedClosedPeriodFallback = true;
       originalDateError = error.message;
-      saveResult = createAndSaveInvoice(payload.fallbackTranDate);
+
+      try {
+        saveResult = createAndSaveInvoice(payload.fallbackTranDate, 'fallback_current_month_first_day');
+        dateAttemptDiagnostics.push(saveResult.dateDiagnostics);
+      } catch (fallbackError) {
+        if (fallbackError.dateDiagnostics) {
+          dateAttemptDiagnostics.push(fallbackError.dateDiagnostics);
+        }
+
+        throw fallbackError;
+      }
     }
 
     return {
@@ -186,6 +339,8 @@ function execute() {
       originalAmazonPurchaseDate: payload.originalAmazonPurchaseDate || null,
       usedClosedPeriodFallback,
       originalDateError,
+      tranDateText: saveResult.tranDateText,
+      dateAttemptDiagnostics,
     };
   } catch (error) {
     return {
@@ -194,6 +349,11 @@ function execute() {
       stack: error.stack,
       error,
       amazonOrderId: payload.amazonOrderId,
+      attemptedTranDate,
+      attemptedFallbackTranDate,
+      usedClosedPeriodFallback,
+      originalDateError,
+      dateAttemptDiagnostics,
     };
   }
 }
