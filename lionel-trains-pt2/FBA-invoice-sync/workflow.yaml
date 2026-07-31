@@ -471,10 +471,15 @@ steps:
                         sku: line.sku,
                         title: line.title,
                         itemInternalId: line.netsuiteItemId,
+                        itemType: line.netsuiteItemType,
                         quantity: line.quantity,
                         rate: round(line.itemPrice / Math.max(line.quantity, 1)),
                         amount: round(line.itemPrice),
                         amazonOrderItemId: line.amazonOrderItemId,
+                        requiredQuantityAtLocation: line.requiredQuantityAtLocation,
+                        availableQuantityAtLocation: line.availableQuantityAtLocation,
+                        inventoryLocationId: line.inventoryLocationId,
+                        inventoryAvailabilitySource: line.inventoryAvailabilitySource,
                       }));
 
                       const totals = (order.lines || []).reduce(
@@ -547,6 +552,20 @@ steps:
                         );
                       }
 
+                      if (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) {
+                        validationErrors.push(
+                          `NetSuite inventory availability check failed: ${resolved.inventoryCheckErrors.join('; ')}.`
+                        );
+                      }
+
+                      if (resolved.inventoryShortages && resolved.inventoryShortages.length) {
+                        validationErrors.push(
+                          `Insufficient NetSuite inventory at location ${resolved.inventoryLocationId || config.netsuite.location}: ${resolved.inventoryShortages.map(line =>
+                            `SKU ${line.sku || line.netsuiteItemSku || line.netsuiteItemId} requires ${line.requiredQuantity}, available ${line.availableQuantity}, shortage ${line.shortageQuantity}`
+                          ).join('; ')}.`
+                        );
+                      }
+
                       if (missingChargeMappings.length) {
                         validationErrors.push(
                           `Missing NetSuite charge item mappings: ${missingChargeMappings.join(', ')}.`
@@ -578,6 +597,10 @@ steps:
                         otherRefNum: order.amazonOrderId,
                         marketplaceId: order.marketplaceId,
                         currency: order.currency,
+                        inventoryLocationId: resolved.inventoryLocationId || config.netsuite.location,
+                        inventoryShortages: resolved.inventoryShortages || [],
+                        inventoryCheckErrors: resolved.inventoryCheckErrors || [],
+                        inventoryCheckSkipped: resolved.inventoryCheckSkipped || [],
                         shippingCost,
                         itemLines,
                         chargeLines,
@@ -600,10 +623,32 @@ steps:
                             const order = input['mapQC7W']?.[0] || {};
                             const payload = input['mapL4FH']?.[0] || {};
 
+                            const shortages = payload.inventoryShortages || [];
+                            const inventoryDetails = shortages.length
+                              ? [
+                                  '',
+                                  'Inventory availability details:',
+                                  ...shortages.map(line =>
+                                    [
+                                      `- SKU: ${line.sku || line.netsuiteItemSku || '(unknown)'}`,
+                                      `NetSuite Item ID: ${line.netsuiteItemId || '(unknown)'}`,
+                                      `Location: ${line.locationId || payload.inventoryLocationId || config.netsuite?.location || '(unknown)'}`,
+                                      `Required: ${line.requiredQuantity}`,
+                                      `Available: ${line.availableQuantity}`,
+                                      `Shortage: ${line.shortageQuantity}`
+                                    ].join(' | ')
+                                  )
+                                ].join('\n')
+                              : '';
+
+                            const inventoryCheckErrors = payload.inventoryCheckErrors && payload.inventoryCheckErrors.length
+                              ? `\n\nInventory check error(s):\n${payload.inventoryCheckErrors.map(e => '- ' + e).join('\n')}`
+                              : '';
+
                             return [{
                               to: config.recipients,
                               subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
-                              body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
+                              body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}${inventoryDetails}${inventoryCheckErrors}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
                             }];
                         - stepNumber: 28
                           name: Map - Map - Build Retry Queue For Mismatch

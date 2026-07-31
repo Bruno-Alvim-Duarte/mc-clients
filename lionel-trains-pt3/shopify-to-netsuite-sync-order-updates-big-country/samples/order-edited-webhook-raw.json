@@ -1,0 +1,72 @@
+[
+  {
+    "query": {},
+    "body": {
+      "order_edit": {
+        "id": 218439319618,
+        "app_id": 1830279,
+        "created_at": "2026-07-29T12:54:44-05:00",
+        "committed_at": "2026-07-29T12:55:56-05:00",
+        "notify_customer": false,
+        "order_id": 7202376679490,
+        "staff_note": "",
+        "user_id": 89057984578,
+        "line_items": {
+          "additions": [],
+          "removals": []
+        },
+        "discounts": {
+          "line_item": {
+            "additions": [
+              {
+                "fixed_amount_set": {
+                  "shop_money": {
+                    "amount": "0.01",
+                    "currency_code": "USD"
+                  },
+                  "presentment_money": {
+                    "amount": "0.01",
+                    "currency_code": "USD"
+                  }
+                },
+                "line_item_id": 17626810548290,
+                "percent_amount": null,
+                "description": "test"
+              }
+            ],
+            "removals": []
+          }
+        },
+        "shipping_lines": {
+          "additions": [],
+          "removals": []
+        }
+      }
+    },
+    "params": {
+      "encoded": "dd765c896fe08b39edbf642c5c053f171c28eced4b9c5f8c11eb9bb1fbed2f03251a1e3d577a445569af985f36edf843"
+    },
+    "url": "/dd765c896fe08b39edbf642c5c053f171c28eced4b9c5f8c11eb9bb1fbed2f03251a1e3d577a445569af985f36edf843",
+    "method": "POST",
+    "headers": {
+      "x-forwarded-for": "34.134.217.119",
+      "x-forwarded-proto": "https",
+      "x-forwarded-port": "443",
+      "host": "webhook.mindcloud.co",
+      "x-amzn-trace-id": "Root=1-6a6a3eaf-48fe857856569f562524b5be",
+      "content-length": "579",
+      "user-agent": "Shopify-Captain-Hook",
+      "accept": "*/*",
+      "accept-encoding": "gzip;q=1.0,deflate;q=0.6,identity;q=0.3",
+      "content-type": "application/json",
+      "x-shopify-api-version": "2026-07",
+      "x-shopify-event-id": "0372d88b-cd4d-4762-b390-5aca0eedf3fa",
+      "x-shopify-hmac-sha256": "i/kGCCYGST1CwMY3pZtfPkVOjRxnMkZfYtW6YDd6puw=",
+      "x-shopify-order-id": "7202376679490",
+      "x-shopify-shop-domain": "farmandranchtoys.myshopify.com",
+      "x-shopify-topic": "orders/edited",
+      "x-shopify-triggered-at": "2026-07-29T17:55:57.294580748Z",
+      "x-shopify-webhook-id": "ae90ecf8-6dc0-582b-a8ac-e91841f48129"
+    }
+  }
+]

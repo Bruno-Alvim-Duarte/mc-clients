@@ -30,10 +30,15 @@ const itemLines = (resolved.matched || []).map(line => ({
   sku: line.sku,
   title: line.title,
   itemInternalId: line.netsuiteItemId,
+  itemType: line.netsuiteItemType,
   quantity: line.quantity,
   rate: round(line.itemPrice / Math.max(line.quantity, 1)),
   amount: round(line.itemPrice),
   amazonOrderItemId: line.amazonOrderItemId,
+  requiredQuantityAtLocation: line.requiredQuantityAtLocation,
+  availableQuantityAtLocation: line.availableQuantityAtLocation,
+  inventoryLocationId: line.inventoryLocationId,
+  inventoryAvailabilitySource: line.inventoryAvailabilitySource,
 }));
 
 const totals = (order.lines || []).reduce(
@@ -106,6 +111,20 @@ if (!resolved.hasAllItems) {
   );
 }
 
+if (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) {
+  validationErrors.push(
+    `NetSuite inventory availability check failed: ${resolved.inventoryCheckErrors.join('; ')}.`
+  );
+}
+
+if (resolved.inventoryShortages && resolved.inventoryShortages.length) {
+  validationErrors.push(
+    `Insufficient NetSuite inventory at location ${resolved.inventoryLocationId || config.netsuite.location}: ${resolved.inventoryShortages.map(line =>
+      `SKU ${line.sku || line.netsuiteItemSku || line.netsuiteItemId} requires ${line.requiredQuantity}, available ${line.availableQuantity}, shortage ${line.shortageQuantity}`
+    ).join('; ')}.`
+  );
+}
+
 if (missingChargeMappings.length) {
   validationErrors.push(
     `Missing NetSuite charge item mappings: ${missingChargeMappings.join(', ')}.`
@@ -137,6 +156,10 @@ return {
   otherRefNum: order.amazonOrderId,
   marketplaceId: order.marketplaceId,
   currency: order.currency,
+  inventoryLocationId: resolved.inventoryLocationId || config.netsuite.location,
+  inventoryShortages: resolved.inventoryShortages || [],
+  inventoryCheckErrors: resolved.inventoryCheckErrors || [],
+  inventoryCheckSkipped: resolved.inventoryCheckSkipped || [],
   shippingCost,
   itemLines,
   chargeLines,

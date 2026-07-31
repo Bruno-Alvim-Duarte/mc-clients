@@ -8,7 +8,7 @@ Linear title: Shopify to NetSuite - Sync Order Updates (Big Country)
 
 Project/client context: Lionel Trains / Big Country Toys
 
-Status: Mostly ready for development, pending final implementation clarifications
+Status: Ready for edit workflow development and sandbox testing; cancellation testing deferred
 
 ## Source Material
 
@@ -241,13 +241,20 @@ Important observations:
     Why it matters: field mapping and line behavior cannot be validated safely without representative records.
     Implementation impact: samples are needed before final implementation and test signoff.
 
-    A: Not yet
+    A: Edit test order identified:
+    - Shopify order name: `#68073`
+    - Shopify numeric order ID: `7202376679490`
+    - NetSuite Sales Order internal ID: `47142255`
+    - NetSuite status: Pending Fulfillment
+    - Shopify `Exported` tag: checked/present
+
+    Cancellation test order is deferred. Test edit first, then test cancellation later.
 
 22. Can we create test orders and test cancellations in the Big Country Shopify store and NetSuite sandbox?
     Why it matters: this workflow mutates financial transaction records.
     Implementation impact: testing in production should be avoided unless explicitly approved.
 
-    A: Yes, we can but later
+    A: Yes. Use NetSuite sandbox plus the Shopify Big Country Toys test order. Gravity-side connections should use the NetSuite sandbox connection and Shopify Big Country Toys connection; no local credential work is needed in this turnover package.
 
 ## Suggested Assumptions To Confirm
 
@@ -264,7 +271,7 @@ Important observations:
 
 - [x] Shopify webhook topics confirmed.
 - [x] Cancellation webhook sample payload collected.
-- [ ] Order edit webhook sample payload collected.
+- [x] Order edit webhook sample payload collected.
 - [ ] Shopify order GraphQL query shape confirmed for edit processing.
 - [x] NetSuite Sales Order lookup key confirmed: Shopify order name in `custbody_shopify_ord_id`.
 - [x] `exported` tag behavior confirmed.
@@ -272,14 +279,15 @@ Important observations:
 - [x] Fulfillment-started NetSuite status codes confirmed.
 - [x] Cancellation line-close behavior confirmed.
 - [x] Removed lines should be closed only.
-- [ ] Update field mapping approved at field level.
+- [x] Update field mapping approved at field level: use the current proposed mapping.
 - [x] Line item matching behavior approved at business level.
 - [x] Missing SKU behavior approved: skip update and alert.
 - [x] Manual NetSuite override/conflict rule approved: alert and skip.
 - [x] Alert recipients confirmed.
 - [x] Failure email content confirmed at business level.
-- [ ] Test Shopify and NetSuite records identified by builder after workflow build.
-- [ ] Sandbox/production credential plan confirmed for active testing by builder after workflow build.
+- [x] Edit test Shopify and NetSuite records identified.
+- [x] Sandbox/production credential plan confirmed for active edit testing.
+- [x] Valid raw cancellation sample file confirmed.
 
 ## Readiness Review After Answers
 
@@ -304,21 +312,15 @@ Confirmed enough to build:
 - Send alerts to `bruno@mindcloud.co`, `AMiller@lionel.com`, and `jjones@lionel.com`.
 - On NetSuite update failure, write a memory entry, send email, and stop.
 
-Final clarifications still needed before completing implementation:
+Final clarifications still needed before completing full implementation:
 
-1. Confirm the exact update field mapping for order edits:
-   - Sales Order shipping address
-   - Sales Order discount line / discount percent
-   - item quantity
-   - item rate
-   - item location
-   - customer fields to update on the NetSuite customer record
-   - customer addressbook behavior
-2. Identify at least one editable test order and one cancellable test order after the workflow is built.
+1. Confirm Shopify GraphQL query shape for fetching full order details during edit processing.
+2. Replace or confirm the cancellation raw sample file. The current local file named `samples/order-cancelled-webhook-raw.json` appears to contain an `orders/edited` payload, not an `orders/cancelled` payload.
+3. Identify one cancellable test order after edit testing is complete.
 
 ## Proposed Field Mapping For Edit Events
 
-Use this as the recommended field scope unless a later decision narrows it.
+Use this as the approved field scope unless a later decision narrows it.
 
 ### NetSuite Sales Order Header
 
@@ -382,6 +384,8 @@ Customer fields that should not change automatically:
 - NetSuite cancellation should be implemented by closing item lines, not by deleting the Sales Order.
 - NetSuite app work should likely use Execute Custom Code for searches and Sales Order mutation.
 - App steps should have Step Completion Option logging and failure emails. Native map/if/loop steps should not receive app-step logging configuration by default.
+- Initial active testing scope is edit only using Shopify order `#68073` / `7202376679490` and NetSuite Sales Order internal ID `47142255`.
+- Cancellation implementation details remain documented, but live cancellation testing is deferred until after edit validation.
 
 ## External Documentation Checked
 
@@ -392,6 +396,11 @@ Customer fields that should not change automatically:
 ## Cancellation Webhook Sample
 
 A real `orders/cancelled` payload was provided for Shopify order `#68025`. The raw payload was not copied into this note because it contains customer PII and is very large, but the implementation-relevant fields are:
+
+Raw sample file status:
+
+- Expected file path: `samples/order-cancelled-webhook-raw.json`
+- Current local file at that path is valid JSON, but it contains `headers.x-shopify-topic = orders/edited` and `body.order_edit`; replace it with the actual `orders/cancelled` raw payload before using it as a cancellation fixture.
 
 - Webhook topic: `headers.x-shopify-topic = orders/cancelled`
 - Webhook event ID: `headers.x-shopify-event-id`
@@ -418,6 +427,39 @@ Implementation notes from the sample:
 - For cancellation, the webhook body appears sufficient to proceed to NetSuite lookup/status validation/line close; a Shopify GraphQL fetch is optional unless the live Gravity payload omits required fields.
 - Do not use `body.line_items.current_quantity` as the source of original ordered quantity on cancellation. Cancelled line items show `current_quantity = 0`, while original ordered quantity remains in `quantity`.
 - Do not process `body.refunds`; the refund workflow owns refund/RMA handling.
+
+## Order Edit Webhook Sample
+
+Raw sample file:
+
+- `samples/order-edited-webhook-raw.json`
+
+A real `orders/edited` payload was provided for Shopify order numeric ID `7202376679490`.
+
+Implementation-relevant fields:
+
+- Webhook topic: `headers.x-shopify-topic = orders/edited`
+- Webhook event ID: `headers.x-shopify-event-id`
+- Webhook ID: `headers.x-shopify-webhook-id`
+- Shopify shop domain: `headers.x-shopify-shop-domain = farmandranchtoys.myshopify.com`
+- Shopify order numeric ID: `headers.x-shopify-order-id`
+- Shopify order edit ID: `body.order_edit.id`
+- Shopify order numeric ID inside body: `body.order_edit.order_id`
+- Edit created timestamp: `body.order_edit.created_at`
+- Edit committed timestamp: `body.order_edit.committed_at`
+- Staff note: `body.order_edit.staff_note`
+- Line item additions/removals: `body.order_edit.line_items.additions` and `body.order_edit.line_items.removals`
+- Line item discount additions/removals: `body.order_edit.discounts.line_item.additions` and `body.order_edit.discounts.line_item.removals`
+- Shipping line additions/removals: present but out of scope
+
+Implementation notes from the edit sample:
+
+- The edit webhook is a delta payload, not a full Shopify order payload.
+- The sample does not include Shopify order name, tags, addresses, customer details, or full line-item state.
+- For edit processing, the workflow must fetch the full Shopify order by numeric order ID or GID before checking the `Exported` tag or looking up the NetSuite Sales Order by Shopify order name.
+- The sample edit was a line-item fixed discount addition: `0.01 USD` on Shopify line item ID `17626810548290`.
+- To apply line-level edits safely, the workflow needs either a stored Shopify line item ID on NetSuite lines or a deterministic fallback match by SKU plus line context from the full order.
+- Shipping line edits are ignored because shipping is out of scope.
 
 Relevant docs:
 

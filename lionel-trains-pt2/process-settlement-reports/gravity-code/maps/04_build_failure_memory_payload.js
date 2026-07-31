@@ -13,9 +13,9 @@
 const runtimeConfig = (input.mapF0FK || input.mapBuildRuntimeConfig || [])[0] || {};
 const currentReport = (input.iterateEV9J || input.iterateSettlementReport || [])[0] || {};
 const settlement = (input.mapXTUO || input.mapParseSettlementReportTsv || [])[0] || {};
-const jePayload = (input.mapBuildJournalEntryPayload || [])[0] || {};
-const createResult = (input.netsuiteCreateJournalEntry || [])[0] || {};
-const attachResult = (input.netsuiteAttachSettlementCsv || [])[0] || {};
+const jePayload = (input.mapWLLK || [])[0] || {};
+const createResult = (input.netsuiteExecuteCustomCodeYDBY || [])[0] || {};
+const attachResult = (input.netsuiteExecuteCustomCode29SZ || [])[0] || {};
 const existingFailureState =
   (input.memoryGetFailureState || [])[0] ||
   (input.keyValueGetFailureState || [])[0] ||
