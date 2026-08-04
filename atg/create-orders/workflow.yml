@@ -1,0 +1,507 @@
+{
+  "steps": [
+    {
+      "code": "const test = new Date();\nconst variables = input['workflowArguments']\nconst res = new Date(test);\nres.setDate(res.getDate() - 7);\n\nconst configuredDate = \"2026-07-22T23:59:59Z\"; // or null/undefined if not configured\n\nconst fallBackDate = configuredDate || res.toISOString();\n\nconst fulfillmentType = variables.recordType === 'cashsale' ? \"fulfillment_status:fulfilled\" : \"fulfillment_status:unfulfilled\"\n\n\nreturn [{fallBackDate , fulfillmentType}];",
+      "name": "Map - Create Fall Back Date",
+      "type": "map",
+      "input": "No data imported",
+      "results": 1,
+      "stepNumber": 1
+    },
+    {
+      "args": [
+        {
+          "label": "Query",
+          "value": "query OrdersForNetSuiteSync($first: Int!, $after: String, $query: String!) {"
+        },
+        {
+          "label": "Variables",
+          "value": "  {"
+        },
+        {
+          "label": "Version",
+          "value": "2024-04"
+        }
+      ],
+      "name": "Shopify - Get Shopify Orders",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 2
+    },
+    {
+      "args": [
+        {
+          "label": "Query",
+          "value": "query OrdersForNetSuiteSync($first: Int!, $after: String, $query: String!) {"
+        },
+        {
+          "label": "Variables",
+          "value": "  {"
+        },
+        {
+          "label": "Version",
+          "value": "2024-04"
+        }
+      ],
+      "name": "Shopify - Get Shopify Orders",
+      "type": "action",
+      "results": 1,
+      "stepNumber": 3
+    },
+    {
+      "args": [
+        {
+          "label": "Bypass Output Size Restriction",
+          "value": "Yes"
+        }
+      ],
+      "code": "const data = input?.shopifyGraphqlBetaWTVO?.[0]?.data;\n\n// const data = input.shopifyGraphqlBetaIADH[0].data\n\nconst edges = data?.orders?.edges ?? [];\n\nconst result = edges.map(edge => {\n\n    if (!edge.node.legacyResourceId) {\n        return {\n            ...edge.node,\n            legacyResourceId: edge.node.id.split('/').pop(),\n        }\n    } else {\n        return {\n            ...edge.node\n        }\n    }\n\n});\n\nreturn [{ result }];\n",
+      "name": "Map - Verify Legacy Resource Id For Order",
+      "type": "map",
+      "input": "Step 2, Step 3",
+      "results": 1,
+      "stepNumber": 4
+    },
+    {
+      "name": "Iterate - Loop through Orders",
+      "type": "loop",
+      "results": 1,
+      "children": [
+        {
+          "args": [
+            {
+              "label": "Action",
+              "value": "doNothing"
+            },
+            {
+              "label": "Emit Log",
+              "value": "Yes"
+            },
+            {
+              "label": "Log Type",
+              "value": "info"
+            },
+            {
+              "label": "Log Message",
+              "value": "[Step 5: input[0].name]"
+            }
+          ],
+          "name": "Flow Control - Emit log",
+          "type": "action",
+          "stepNumber": 6
+        },
+        {
+          "name": "Netsuite - Find Existing Sales Order",
+          "type": "action",
+          "stepNumber": 7
+        },
+        {
+          "name": "If/Else - If Sales Order does not exist",
+          "type": "conditional",
+          "results": 1,
+          "branches": {
+            "true": [
+              {
+                "code": "const iterationLoop = input['iterateELDR'][0];\nconst envVariables = input['workflowArguments'];\n\nlet defaultCustomerId\n\nif(envVariables.recordType === 'cashsale' && iterationLoop.customer == null){\n    defaultCustomerId = '556024'\n}\n\nreturn [{\n    defaultCustomerId,\n}]",
+                "name": "Map - Check If It Is Cash Sale Default Customer",
+                "type": "map",
+                "input": "Step 5",
+                "results": 1,
+                "stepNumber": 9
+              },
+              {
+                "name": "Netsuite - List Customers",
+                "type": "action",
+                "results": 1,
+                "stepNumber": 10
+              },
+              {
+                "name": "If/Else - Check For Custome Existence",
+                "type": "conditional",
+                "results": 1,
+                "branches": {
+                  "true": [
+                    {
+                      "args": [
+                        {
+                          "label": "Action",
+                          "value": "doNothing"
+                        },
+                        {
+                          "label": "Emit Log",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Log Type",
+                          "value": "info"
+                        },
+                        {
+                          "label": "Log Message",
+                          "value": "Customer Exists"
+                        }
+                      ],
+                      "name": "Flow Control - Customer Exists",
+                      "type": "action",
+                      "stepNumber": 12
+                    }
+                  ],
+                  "false": [
+                    {
+                      "name": "If/Else - If Environment = 3D Detroit",
+                      "type": "conditional",
+                      "results": 1,
+                      "branches": {
+                        "true": [
+                          {
+                            "name": "Netsuite - Use Fixed Customer for 3D Detroit",
+                            "type": "action",
+                            "results": 1,
+                            "stepNumber": 14
+                          }
+                        ],
+                        "false": [
+                          {
+                            "name": "Netsuite - Create Customer",
+                            "type": "action",
+                            "results": 1,
+                            "stepNumber": 15
+                          },
+                          {
+                            "name": "If/Else - If Success != true",
+                            "type": "conditional",
+                            "branches": {
+                              "true": [
+                                {
+                                  "code": "const customerCreationError = input['netsuiteExecuteCustomCode7JLT'][0].error;\nconst loopIteration = input['iterateELDR'][0];\n\n\nconst orderNumber = loopIteration.number\nconst customer = loopIteration.customer\n\nconst email = `\nThere was an issue while trying to create the customer of the order #${orderNumber}\n\nreason: ${customerCreationError}\nCustomer Details:\nshopify ID: ${customer.legacyResourceId},\nemail: ${customer.email}\ndisplay name: ${customer.displayName}\nhas Default address: ${!!customer.defaultAddress}\n\nsent by:\nMindCloud\n`\n\nreturn [{email}]",
+                                  "name": "Map - Email about Failed Customer Creation",
+                                  "type": "map",
+                                  "input": "Step 15, Step 5",
+                                  "results": 1,
+                                  "stepNumber": 17
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "label": "Action",
+                                      "value": "doNothing"
+                                    },
+                                    {
+                                      "label": "Emit Log",
+                                      "value": "Yes"
+                                    },
+                                    {
+                                      "label": "Log Type",
+                                      "value": "warning"
+                                    },
+                                    {
+                                      "label": "Log Message",
+                                      "value": "Failed to Create Customer for Order # "
+                                    },
+                                    {
+                                      "label": "Send Email",
+                                      "value": "Yes"
+                                    },
+                                    {
+                                      "label": "Email To",
+                                      "value": "ahosamani@appearancetg.com"
+                                    },
+                                    {
+                                      "label": "Email Subject",
+                                      "value": "Shopify -> NetSuite Create Orders: customer creation Failed"
+                                    },
+                                    {
+                                      "label": "Email Body",
+                                      "value": "[Step 17: input[0].email]"
+                                    }
+                                  ],
+                                  "name": "Flow Control - Emit log, send email",
+                                  "type": "action",
+                                  "stepNumber": 18
+                                }
+                              ]
+                            },
+                            "condition": "[Step 15: input[0].success] ne true",
+                            "stepNumber": 16
+                          }
+                        ]
+                      },
+                      "condition": "[system: environment] = 3D Detroit",
+                      "stepNumber": 13
+                    }
+                  ]
+                },
+                "condition": "[Step 10: input[0].id] nempty null",
+                "stepNumber": 11
+              },
+              {
+                "name": "Netsuite - Check For Missing SKUs",
+                "type": "action",
+                "results": 1,
+                "stepNumber": 19
+              },
+              {
+                "name": "If/Else - If It Has Missing SKUs",
+                "type": "conditional",
+                "results": 1,
+                "branches": {
+                  "true": [
+                    {
+                      "code": "const missingSKUs = input['netsuiteExecuteCustomCode9Q9L'][0].missingSkus;\n\n\nconst email = `\nHello,\n\nDuring the Shopify → NetSuite synchronization, some SKUs from Shopify could not be found in NetSuite.\n\nPlease review the following missing SKUs:\n\n${missingSKUs.map(sku => `- ${sku}`).join(\"\\n\")}\n\nThese items has blocked the Workflow because no matching SKU exists in NetSuite.\n\nPlease verify that the SKUs exist in NetSuite and match the corresponding Shopify SKUs before running the synchronization again.\n\nBest regards,\nMindCloud Team\n`;\n\nreturn [{email}];",
+                      "name": "Map - Create Missing SKUs Email",
+                      "type": "map",
+                      "input": "Step 19",
+                      "results": 1,
+                      "stepNumber": 21
+                    },
+                    {
+                      "args": [
+                        {
+                          "label": "Action",
+                          "value": "continue"
+                        },
+                        {
+                          "label": "Emit Log",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Log Type",
+                          "value": "info"
+                        },
+                        {
+                          "label": "Log Message",
+                          "value": "Missing SKUs"
+                        },
+                        {
+                          "label": "Send Email",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Email To",
+                          "value": "ahosamani@appearancetg.com"
+                        },
+                        {
+                          "label": "Email Subject",
+                          "value": "Shopify -> NetSuite Create Orders: Missiing SKUs"
+                        },
+                        {
+                          "label": "Email Body",
+                          "value": "[Step 21: input[0].email]"
+                        }
+                      ],
+                      "name": "Flow Control - Continue, emit log, send email",
+                      "type": "action",
+                      "results": 1,
+                      "stepNumber": 22
+                    }
+                  ]
+                },
+                "condition": "[Step 19: input[0].success] ne true",
+                "stepNumber": 20
+              },
+              {
+                "code": "const iteration = input['iterateELDR'][0];\n\n\n\n\nconst order = {\n    ...iteration,\n    \n}\n\nconst data = {\n    order,\n}\n\n\n\nreturn [{\n    data\n}];",
+                "name": "Map - Prepare For Creating Sales Order",
+                "type": "map",
+                "input": "Step 5",
+                "results": 1,
+                "stepNumber": 23
+              },
+              {
+                "name": "Netsuite - Create Sales Order Or Cash Sale",
+                "type": "action",
+                "results": 1,
+                "stepNumber": 24
+              },
+              {
+                "name": "If/Else - If Default Length > ...",
+                "type": "conditional",
+                "branches": {
+                  "true": [
+                    {
+                      "code": "const result = input['netsuiteExecuteCustomCodeVV1H'][0];\nconst loopIteration = input['iterateELDR'][0]\n\nconst skusMessage = result?.defaultUnitSkus?.join(', ')||''\n\nconst email = `\nThe order # ${loopIteration.number} had to use the default unit of the items:\n- SKUs: ${skusMessage}\n\nThese SKUs needs to be cheked whether they are using the correct Default Value for Units.\n\n\nSent By:\nMindCloud\n`\n\n\nreturn [{email}]",
+                      "name": "Map - Create Email If it Uses Default Units When Creating Order",
+                      "type": "map",
+                      "input": "Step 24, Step 5",
+                      "results": 1,
+                      "stepNumber": 26
+                    },
+                    {
+                      "args": [
+                        {
+                          "label": "Action",
+                          "value": "doNothing"
+                        },
+                        {
+                          "label": "Log Type",
+                          "value": "info"
+                        },
+                        {
+                          "label": "Send Email",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Email To",
+                          "value": "ben@3dproducts.com,ahosamani@appearancetg.com"
+                        },
+                        {
+                          "label": "Email Subject",
+                          "value": "Shopify -> NetSuite Create Orders: Default Unit Type Item"
+                        },
+                        {
+                          "label": "Email Body",
+                          "value": "[Step 26: input[0].email]"
+                        }
+                      ],
+                      "name": "Flow Control - Send email",
+                      "type": "action",
+                      "stepNumber": 27
+                    }
+                  ]
+                },
+                "condition": "[Step 24: input[0].defaultLength] > 0",
+                "stepNumber": 25
+              },
+              {
+                "name": "If/Else - If Success = true",
+                "type": "conditional",
+                "results": 1,
+                "branches": {
+                  "true": [
+                    {
+                      "args": [
+                        {
+                          "label": "Variables",
+                          "value": "{ id:\""
+                        },
+                        {
+                          "label": "Query",
+                          "value": "mutation tagsAdd($id: ID!, $tags: [String!]!) "
+                        }
+                      ],
+                      "name": "Shopify - Tag Record As Exported",
+                      "type": "action",
+                      "results": 1,
+                      "stepNumber": 29
+                    }
+                  ],
+                  "false": [
+                    {
+                      "code": "const errorMsg = input['netsuiteExecuteCustomCodeVV1H']?.[0]?.error || ''\n\nconst loopIteration = input['iterateELDR']?.[0]\nconst number = loopIteration?.number || 0\n\nconst email = `\n - An error has occured while trying to create order with # ${number}\n - This order failed due to error: ${errorMsg}\n\n - this means the order was not created but skipped and will appear\n again in future runs ( not tagged as exported ).\n\n Sent By:\n MindCloud\n`\n\nreturn [{email}]",
+                      "name": "Map - Email for Order Creation Fail",
+                      "type": "map",
+                      "input": "Step 24, Step 5",
+                      "results": 1,
+                      "stepNumber": 30
+                    },
+                    {
+                      "args": [
+                        {
+                          "label": "Action",
+                          "value": "continue"
+                        },
+                        {
+                          "label": "Emit Log",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Log Type",
+                          "value": "warning"
+                        },
+                        {
+                          "label": "Log Message",
+                          "value": "Failed to Create Order, something wen wrong with step Create..."
+                        },
+                        {
+                          "label": "Send Email",
+                          "value": "Yes"
+                        },
+                        {
+                          "label": "Email To",
+                          "value": "ahosamani@appearancetg.com"
+                        },
+                        {
+                          "label": "Email Subject",
+                          "value": "Shopify -> NetSuite Create Orders: Order Failed to be Created"
+                        },
+                        {
+                          "label": "Email Body",
+                          "value": "[Step 30: input[0].email]"
+                        }
+                      ],
+                      "name": "Flow Control - Continue, emit log, send email",
+                      "type": "action",
+                      "stepNumber": 31
+                    }
+                  ]
+                },
+                "condition": "[Step 24: input[0].success] = true",
+                "stepNumber": 28
+              }
+            ],
+            "false": [
+              {
+                "args": [
+                  {
+                    "label": "Variables",
+                    "value": "{ id:\""
+                  },
+                  {
+                    "label": "Query",
+                    "value": "mutation tagsAdd($id: ID!, $tags: [String!]!) "
+                  }
+                ],
+                "name": "Shopify - Tag Record As Exported",
+                "type": "action",
+                "results": 1,
+                "stepNumber": 32
+              }
+            ]
+          },
+          "condition": "[Step 7: input[0].id] empty null",
+          "stepNumber": 8
+        }
+      ],
+      "loopTarget": {
+        "name": "Map - Verify Legacy Resource Id For Order",
+        "stepNumber": 4
+      },
+      "stepNumber": 5
+    }
+  ],
+  "triggers": [
+    {
+      "name": "Schedule - Run every 30 minutes, daily",
+      "type": "schedule",
+      "message": "Run every 30 minutes, daily",
+      "schedule": {
+        "days": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "mode": "interval",
+        "dayNames": [
+          "Sunday",
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday"
+        ],
+        "intervalMs": 1800000
+      }
+    }
+  ],
+  "workflow": {
+    "id": "07AmiDLLBtG1",
+    "name": "Shopify to NetSuite - Create Orders",
+    "version": "draft",
+    "isActive": true,
+    "publishedOn": "2026-07-31T20:56:46.000Z"
+  }
+}
