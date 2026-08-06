@@ -37,6 +37,7 @@ const order = ${JSON.stringify(input?.iterateELDR?.[0])};
         columns: [
           search.createColumn({ name: 'internalid' }),
           search.createColumn({ name: 'itemid' }),
+          search.createColumn({ name: 'type' }),
           search.createColumn({ name: 'displayname' }),
           search.createColumn({ name: 'salesdescription' }),
           search.createColumn({ name: 'upccode' }),
@@ -49,12 +50,30 @@ const order = ${JSON.stringify(input?.iterateELDR?.[0])};
         return parts[parts.length - 1].trim();
       }
 
+      function normalizeItemType(value) {
+        return String(value || '').toLowerCase().replace(/[\s_-]/g, '');
+      }
+
+      function isNonInventoryItem(itemTypeValue, itemTypeText, itemRecordType) {
+        var values = [itemTypeValue, itemTypeText, itemRecordType].map(normalizeItemType);
+        return values.some(function (value) {
+          return value === 'noninvtpart'
+            || value === 'noninventoryitem'
+            || value.indexOf('noninventory') !== -1
+            || value.indexOf('noninvt') !== -1;
+        });
+      }
+
       const foundSkuMap = {};
       const inactiveSkuSet = {};
 
       itemSearch.run().each(function (result) {
         const key = extractSku(result.getValue({ name: 'itemid' }));
         const isInactive = result.getValue({ name: 'isinactive' }) === 'T';
+        const itemTypeValue = result.getValue({ name: 'type' });
+        const itemTypeText = result.getText({ name: 'type' });
+        const itemRecordType = result.recordType || '';
+        const isNonInventory = isNonInventoryItem(itemTypeValue, itemTypeText, itemRecordType);
 
         if (isInactive) {
           inactiveSkuSet[key] = true;
@@ -62,6 +81,10 @@ const order = ${JSON.stringify(input?.iterateELDR?.[0])};
           foundSkuMap[key] = {
             internalId: result.getValue({ name: 'internalid' }),
             sku: result.getValue({ name: 'itemid' }),
+            itemType: itemTypeValue,
+            itemTypeText: itemTypeText,
+            itemRecordType: itemRecordType,
+            isNonInventoryItem: isNonInventory,
             displayName: result.getValue({ name: 'displayname' }),
             salesDescription: result.getValue({ name: 'salesdescription' }),
             upcCode: result.getValue({ name: 'upccode' })
@@ -84,6 +107,12 @@ const order = ${JSON.stringify(input?.iterateELDR?.[0])};
       const foundItems = skus
         .filter(function (sku) { return foundSkuMap[sku]; })
         .map(function (sku) { return foundSkuMap[sku]; });
+
+      const allItemsNonInventory = missingSkus.length === 0
+        && skus.length > 0
+        && skus.every(function (sku) {
+          return foundSkuMap[sku] && foundSkuMap[sku].isNonInventoryItem === true;
+        });
 
       const enrichedLineItems = lineItems.map(function (lineItem) {
         const node = lineItem.node || {};
@@ -110,6 +139,8 @@ const order = ${JSON.stringify(input?.iterateELDR?.[0])};
         searchedSkus: skus,
         foundItems: foundItems,
         missingSkus: missingSkus,
+        allItemsNonInventory: allItemsNonInventory,
+        allNonInventoryItems: allItemsNonInventory,
         lineItems: enrichedLineItems
       };
 

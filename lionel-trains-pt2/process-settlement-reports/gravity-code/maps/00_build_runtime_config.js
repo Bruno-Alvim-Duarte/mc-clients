@@ -23,6 +23,7 @@ const config = {
     currencyByCode: {
       "USD": "1"
     },
+    journalEntryCurrencyCode: "USD",
     accountIds: {
       accountsReceivable: "123",
       cash: "1113", // DIFFERENT IN PRODUCTION ⚠️⚠️
@@ -40,7 +41,15 @@ const config = {
     failWhenTaxDoesNotNetToZero: true,
     moneyTolerance: 0.01,
     saveSuccessfulSettlementsInMemory: false,
-    saveFailedSettlementsInMemory: true
+    saveFailedSettlementsInMemory: true,
+    currencyConversion: {
+      sourceCurrencyCodes: ["MXN"],
+      targetCurrencyCode: "USD",
+      financialEventGroupSearchPaddingDays: 3,
+      financialEventGroupDateMatchToleranceSeconds: 60,
+      financialEventGroupAmountTolerance: 0.01,
+      roundingAdjustmentTolerance: 0.05
+    }
   },
   memory: {
     failureListKey: "amazon_settlement_failures"

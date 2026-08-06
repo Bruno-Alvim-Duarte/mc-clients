@@ -150,10 +150,24 @@ var C = {
   SHOPIFY_STORE_ID:    ${JSON.stringify(input['workflowArguments'].shopifyStoreId)},
   DISCOUNT_ITEM_ID:        '3803', // item tipo Discount no NS — confirmado via output Celigo
   SHIPPING_ITEM_ID:        '7239', // Non-inventory Item for Sale para frete — evita Avalara no shipping
-  CASH_SALE_CUSTOMER_ID:   '556024', // 3D Detroit POS default customer — usado em todos os Cash Sales
+  CASH_SALE_CUSTOMER_ID:   '556024', // 3D Detroit POS default customer
 };
 
-var isCashSale = String(C.SUBSIDIARY_ID) === '1' && C.RECORD_TYPE === 'cashsale';
+var skuCheckResult = ${JSON.stringify(input['netsuiteExecuteCustomCode9Q9L']?.[0] || {})};
+var isConfiguredCashSale = String(C.SUBSIDIARY_ID) === '1' && C.RECORD_TYPE === 'cashsale';
+var isNonInventoryCashSale = !!(
+  skuCheckResult
+  && skuCheckResult.success === true
+  && (
+    skuCheckResult.allItemsNonInventory === true
+    || skuCheckResult.allNonInventoryItems === true
+  )
+);
+var shouldTransformSalesOrderToCashSale = isNonInventoryCashSale && !isConfiguredCashSale;
+var isCashSale = isConfiguredCashSale;
+var cashSaleReason = isConfiguredCashSale
+  ? 'configured_cashsale'
+  : (shouldTransformSalesOrderToCashSale ? 'salesorder_transform_all_non_inventory_items' : null);
 
 function shopMoney(priceSet) {
   return priceSet && priceSet.shopMoney ? parseFloat(priceSet.shopMoney.amount) || 0 : 0;
@@ -262,7 +276,7 @@ try {
 
   var customerInternalId;
 
-  if (isCashSale) {
+  if (isConfiguredCashSale) {
     // Cash Sale (3D Detroit POS): sempre usa o customer padrão, independente do customer do pedido
     customerInternalId = C.CASH_SALE_CUSTOMER_ID;
   } else {
@@ -291,7 +305,7 @@ try {
 
   var legacyId     = order.legacyResourceId;
   var billingAddr  = order.billingAddress  || {};
-  var shippingAddr = isCashSale
+  var shippingAddr = isConfiguredCashSale
     ? {
         name:          'Shopify - 3D Detroit',
         address1:      '33106 W 8 Mile Road',
@@ -312,32 +326,79 @@ try {
   }
 
   // --- Idempotência --- //
-  var idempotencyFilters = isCashSale
-    ? [
+  var existing = [];
+  var existingSalesOrderToTransform = null;
+
+  if (isCashSale) {
+    existing = search.create({
+      type: 'cashsale',
+      filters: [
         ['custbody_celigo_etail_order_id', search.Operator.IS, String(legacyId)],
         'AND',
         ['mainline', search.Operator.IS, 'T']
-      ]
-    : [
+      ],
+      columns: ['internalid', 'tranid']
+    }).run().getRange({ start: 0, end: 1 });
+  } else if (shouldTransformSalesOrderToCashSale) {
+    existing = search.create({
+      type: 'cashsale',
+      filters: [
+        ['custbody_celigo_etail_order_id', search.Operator.IS, String(legacyId)],
+        'AND',
+        ['mainline', search.Operator.IS, 'T']
+      ],
+      columns: ['internalid', 'tranid']
+    }).run().getRange({ start: 0, end: 1 });
+
+    if (existing.length === 0) {
+      var existingSalesOrder = search.create({
+        type: search.Type.SALES_ORDER,
+        filters: [
+          ['custbody_celigo_etail_order_id', search.Operator.IS, String(legacyId)],
+          'AND',
+          ['mainline', search.Operator.IS, 'T']
+        ],
+        columns: ['internalid', 'tranid']
+      }).run().getRange({ start: 0, end: 1 });
+
+      if (existingSalesOrder.length > 0) {
+        existingSalesOrderToTransform = {
+          id: existingSalesOrder[0].getValue({ name: 'internalid' }),
+          tranid: existingSalesOrder[0].getValue({ name: 'tranid' })
+        };
+      }
+    }
+  } else {
+    existing = search.create({
+      type: search.Type.SALES_ORDER,
+      filters: [
         ['custbody_celigo_etail_order_id', search.Operator.IS, String(legacyId)],
         'AND',
         ['mainline', search.Operator.IS, 'T'],
         'AND',
         ['status', search.Operator.ANYOF, ['SalesOrd:A', 'SalesOrd:B', 'SalesOrd:D', 'SalesOrd:F']]
-      ];
-
-  var existing = search.create({
-    type: isCashSale ? 'cashsale' : search.Type.SALES_ORDER,
-    filters: idempotencyFilters,
-    columns: ['internalid', 'tranid']
-  }).run().getRange({ start: 0, end: 1 });
+      ],
+      columns: ['internalid', 'tranid']
+    }).run().getRange({ start: 0, end: 1 });
+  }
 
   if (existing.length > 0) {
     result.recordId     = existing[0].getValue({ name: 'internalid' });
     result.recordNumber = existing[0].getValue({ name: 'tranid' });
-    result.recordType   = isCashSale ? 'cashsale' : 'salesorder';
+    result.recordType   = (isCashSale || shouldTransformSalesOrderToCashSale) ? 'cashsale' : 'salesorder';
+    if (cashSaleReason) result.cashSaleReason = cashSaleReason;
     result.duplicate    = true;
   } else {
+    var recId = null;
+    var recLookup = null;
+    var defaultUnitSkus = [];
+    var totalPrice = shopMoney(order.totalPriceSet);
+
+    if (existingSalesOrderToTransform) {
+      recId = existingSalesOrderToTransform.id;
+      recLookup = { tranid: existingSalesOrderToTransform.tranid };
+      result.salesOrderReusedForTransform = true;
+    } else {
     var locationId = null;
     var foNodes = (order.fulfillmentOrders && order.fulfillmentOrders.nodes) || [];
 
@@ -416,7 +477,6 @@ try {
     var missing = uniqueSkus.filter(function(sku) { return !skuMap[normalizeSku(sku)]; });
     if (missing.length > 0) throw new Error('SKUs not found on NetSuite: ' + missing.join(', '));
 
-    var totalPrice   = shopMoney(order.totalPriceSet);
     var shippingCost = shopMoney(order.totalShippingPriceSet);
     var poNum        = '#' + order.number;
     var memo         = 'Shopify - ' + (order.note || order.name);
@@ -551,8 +611,6 @@ try {
     // --- Line items: setSublistValue com lineIndex (isDynamic: false) --- //
     // Sem selectNewLine / commitLine — o índice controla a linha diretamente
     // rate e amount são setados explicitamente sem risco de override pelo NS
-    var defaultUnitSkus = [];
-
     lineEdges.forEach(function(edge, lineIndex) {
       var li        = edge.node;
       var sku       = normalizeSku(li.sku);
@@ -607,17 +665,55 @@ try {
     }
 
     // enableSourcing: false — impede re-sourcing de rate/amount durante o save
-    var recId = txRecord.save({ enableSourcing: false, ignoreMandatoryFields: false });
+    recId = txRecord.save({ enableSourcing: false, ignoreMandatoryFields: false });
 
-    var recLookup = search.lookupFields({
+    recLookup = search.lookupFields({
       type: isCashSale ? 'cashsale' : record.Type.SALES_ORDER,
       id:   recId,
       columns: ['tranid']
     });
+    }
 
-    result.recordId     = String(recId);
-    result.recordNumber = recLookup.tranid || String(recId);
-    result.recordType   = isCashSale ? 'cashsale' : 'salesorder';
+    if (shouldTransformSalesOrderToCashSale) {
+      var cashSaleRecord = record.transform({
+        fromType: record.Type.SALES_ORDER,
+        fromId: recId,
+        toType: 'cashsale',
+        isDynamic: false
+      });
+
+      var transformGateway = order.transactions && order.transactions.length > 0
+        ? order.transactions[0].gateway
+        : null;
+      var transformPaymentMethod = resolvePaymentMethod(transformGateway);
+
+      cashSaleRecord.setValue({ fieldId: 'externalid', value: 'SHPF-CS-' + C.SHOPIFY_STORE_ID + '-' + String(legacyId) });
+      cashSaleRecord.setValue({ fieldId: 'custbody_celigo_etail_order_id', value: String(legacyId) });
+      cashSaleRecord.setValue({ fieldId: 'custbody_celigo_shopify_order_no', value: String(order.number) });
+      if (transformPaymentMethod) cashSaleRecord.setValue({ fieldId: 'paymentmethod', value: transformPaymentMethod });
+      cashSaleRecord.setValue({ fieldId: 'payment', value: totalPrice });
+
+      var cashSaleId = cashSaleRecord.save({ enableSourcing: false, ignoreMandatoryFields: false });
+      var cashSaleLookup = search.lookupFields({
+        type: 'cashsale',
+        id: cashSaleId,
+        columns: ['tranid']
+      });
+
+      result.salesOrderId     = String(recId);
+      result.salesOrderNumber = recLookup.tranid || String(recId);
+      result.cashSaleId       = String(cashSaleId);
+      result.cashSaleNumber   = cashSaleLookup.tranid || String(cashSaleId);
+      result.recordId         = String(cashSaleId);
+      result.recordNumber     = result.cashSaleNumber;
+      result.recordType       = 'cashsale';
+      result.transformedFromSalesOrder = true;
+    } else {
+      result.recordId     = String(recId);
+      result.recordNumber = recLookup.tranid || String(recId);
+      result.recordType   = isCashSale ? 'cashsale' : 'salesorder';
+    }
+    if (cashSaleReason) result.cashSaleReason = cashSaleReason;
     result.created      = true;
     result.defaultLength = defaultUnitSkus.length
     if (defaultUnitSkus.length > 0) result.defaultUnitSkus = defaultUnitSkus;

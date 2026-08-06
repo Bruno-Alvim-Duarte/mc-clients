@@ -27,6 +27,7 @@ This skill is for requirements assessment and question generation, not for imple
 4. Compare the source material against the readiness criteria and question bank.
 5. Produce only the most relevant questions. Avoid generic discovery questions that are already answered by the task.
 6. If a field mapping or workflow behavior is partially implied, state the inference and ask the user to confirm it.
+7. When working in a local workspace, write the turnover review to a Markdown file by default unless the user explicitly asks for chat-only output. Use a concise workflow folder name, such as `refunds-sync/`, and a descriptive file name, such as `refund-sync-turnover.md`. Keep the chat response brief and point to the file.
 
 ## Readiness Criteria
 

@@ -59,65 +59,84 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
    - Reads account IDs and behavior flags from `Build Runtime Config`.
    - Local code: `gravity-code/maps/02_parse_settlement_report_tsv.js`
 
-11. **If: Parsed Settlement Is Createable**
+11. **Map: Build Financial Event Group Search Request**
+   - Purpose: build a Financial Event Group search window around the parsed settlement `settlement-end-date`.
+   - Default window: 3 days before through 3 days after the settlement end date.
+   - Exposes `startDate`, `endDate`, `financialEventGroupStartDate`, `financialEventGroupEndDate`, and `requiresCurrencyConversion`.
+   - Local code: `gravity-code/maps/03_build_financial_event_group_search_request.js`
+
+12. **Amazon Seller: List Financial Event Groups**
+   - App action: existing Gravity action that lists Financial Event Groups between two dates.
+   - Input start/end date: output from `Build Financial Event Group Search Request`.
+   - No local code file.
+
+13. **Map: Apply Settlement Currency Conversion**
+   - Purpose: for configured source currencies such as MXN, find the Financial Event Group whose `fundTransferDate` matches the settlement `settlement-end-date`, calculate Amazon's exchange rate as `convertedTotal.currencyAmount / originalTotal.currencyAmount`, and convert the settlement accounting totals to USD.
+   - If more than one group has the same `fundTransferDate`, use `originalTotal.currencyCode` and `originalTotal.currencyAmount` to disambiguate.
+   - If the settlement is already USD, returns the original settlement unchanged with conversion metadata.
+   - Reads runtime config, parsed settlement, Financial Event Group search request, and Amazon Financial Event Group list output.
+   - Local code: `gravity-code/maps/04_apply_settlement_currency_conversion.js`
+
+14. **If: Converted/Parsed Settlement Is Createable**
     - If `canCreateJournalEntry = true`, continue.
     - If false, go to failure-memory/log branch, then continue loop.
     - No local code file.
 
-12. **Map: Build NetSuite Journal Entry Payload**
+15. **Map: Build NetSuite Journal Entry Payload**
    - Purpose: build NetSuite Journal Entry payload and verify debits equal credits.
    - Reads NetSuite defaults and currency mapping from `Build Runtime Config`.
+   - Reads the converted settlement output from `Apply Settlement Currency Conversion`.
    - Does not add a clearing/balancing account. Cash account `1113` is the clearing line through the settlement header `total-amount`.
-   - Local code: `gravity-code/maps/03_build_journal_entry_payload.js`
+   - Local code: `gravity-code/maps/05_build_journal_entry_payload.js`
 
-13. **NetSuite Execute Custom Code: Search Existing Journal Entry**
+16. **NetSuite Execute Custom Code: Search Existing Journal Entry**
     - Purpose: search NetSuite by external ID `amazon_settlement_{settlement-id}`.
     - Local code: `gravity-code/netsuite/01_search_existing_journal_entry.js`
 
-14. **Memory/KV: Get Failure State**
+17. **Memory/KV: Get Failure State**
     - Purpose: read the shared key `amazon_settlement_failures`.
     - Needed so an existing Journal Entry can still go through CSV attachment retry if the previous run created the JE but failed attaching the file.
     - The value is an array. A pending attachment failure exists when one array item has the current `settlementId` and enough context to retry attachment.
     - No local code file.
 
-15. **If: Existing Journal Entry Decision**
+18. **If: Existing Journal Entry Decision**
     - If multiple matching JEs exist: failure branch, save failure state, email/log, continue loop.
     - If exactly one JE exists and no pending attachment failure exists: log skip, continue loop.
     - If exactly one JE exists and pending attachment failure exists: continue to CSV attachment retry.
     - If no JE exists: continue to create JE.
     - No local code file.
 
-16. **NetSuite Execute Custom Code: Create Journal Entry**
+19. **NetSuite Execute Custom Code: Create Journal Entry**
     - Purpose: create the NetSuite Journal Entry.
     - Run only when no matching JE exists.
     - Local code: `gravity-code/netsuite/02_create_journal_entry.js`
 
-17. **If: Journal Entry Created Or Existing Retry Target Available**
+20. **If: Journal Entry Created Or Existing Retry Target Available**
     - Continue only if there is a newly created JE or an existing JE from a pending attachment retry.
     - If missing, failure branch, save failure state, email/log, continue loop.
     - No local code file.
 
-18. **NetSuite Execute Custom Code: Attach Settlement CSV**
+21. **NetSuite Execute Custom Code: Attach Settlement CSV**
    - Purpose: save the downloaded settlement report in NetSuite File Cabinet and attach it to the Journal Entry.
    - Reads File Cabinet folder ID from `Build Runtime Config`.
    - Local code: `gravity-code/netsuite/03_attach_settlement_csv.js`
 
-19. **If: Attachment Succeeded**
+22. **If: Attachment Succeeded**
     - If successful, clear or resolve failure state if one existed.
     - If failed, build failure memory payload, save failure state, email/log, continue loop.
     - No local code file.
 
-20. **Map: Build Resolved Failure Memory Payload**
+23. **Map: Build Resolved Failure Memory Payload**
     - Purpose: remove the current settlement from the shared failure array after a successful retry or successful full process.
     - Reads the current `amazon_settlement_failures` array from the Memory/KV get step and returns the same key with a filtered array value.
-    - Local code: `gravity-code/maps/05_build_resolved_failure_memory_payload.js`
+    - Local code: `gravity-code/maps/07_build_resolved_failure_memory_payload.js`
 
-21. **Memory/KV: Save Updated Failure Array**
+24. **Memory/KV: Save Updated Failure Array**
     - Key: `amazon_settlement_failures`
     - Value: output `value` from `Build Resolved Failure Memory Payload`.
     - No local code file.
 
-22. **Flow Control: Log Settlement Success**
+25. **Flow Control: Log Settlement Success**
     - Log created, skipped, or attachment-retried result.
     - No local code file.
 
@@ -125,30 +144,31 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
 
 Use this branch from any loop-level failure point that should skip only the current settlement and continue with the next report.
 
-23. **Memory/KV: Get Current Failure Array**
+26. **Memory/KV: Get Current Failure Array**
     - Key: `amazon_settlement_failures`
     - Run immediately before building the failure payload so this branch does not overwrite failures added earlier in the same workflow run.
     - If the key does not exist, continue with an empty array.
     - No local code file.
 
-24. **Map: Build Failure Memory Payload**
+27. **Map: Build Failure Memory Payload**
     - Purpose: add or replace the current settlement in the shared retryable failure array.
     - Reads the current `amazon_settlement_failures` array from `Get Current Failure Array` and returns the same key with the updated array value.
     - Set or provide `failurePhase` according to the failed stage, for example:
       - `parse_report`
+      - `currency_conversion`
       - `build_je_payload`
       - `search_existing_je`
       - `create_je`
       - `attach_csv`
       - `multiple_existing_je`
-    - Local code: `gravity-code/maps/04_build_failure_memory_payload.js`
+    - Local code: `gravity-code/maps/06_build_failure_memory_payload.js`
 
-25. **Memory/KV: Save Failure State**
+28. **Memory/KV: Save Failure State**
     - Key: `amazon_settlement_failures`
     - Value: output `value` from `Build Failure Memory Payload`
     - No local code file.
 
-26. **Flow Control: Send Failure Email And Continue Loop**
+29. **Flow Control: Send Failure Email And Continue Loop**
     - Recipients:
       `bruno@mindcloud.co`, `AMiller@lionel.com`, `jjones@lionel.com`
     - Behavior: continue loop.
@@ -156,13 +176,13 @@ Use this branch from any loop-level failure point that should skip only the curr
 
 ## After The Loop
 
-27. **Optional Memory: Update Checkpoint**
+30. **Optional Memory: Update Checkpoint**
     - Update only after the full page/batch succeeds.
     - This checkpoint should not be treated as processed-settlement storage.
     - Do not let checkpointing prevent retrying failure states.
     - No local code file.
 
-28. **Flow Control: Log Batch Summary**
+31. **Flow Control: Log Batch Summary**
     - Include report count, created count, skipped count, attachment retry count, and failure count if available.
     - No local code file.
 
@@ -187,9 +207,11 @@ Recommended behavior:
 | Map: Build Runtime Config | `gravity-code/maps/00_build_runtime_config.js` |
 | Map: Filter Completed Settlement Reports | `gravity-code/maps/01_filter_completed_settlement_reports.js` |
 | Map: Parse Settlement Report TSV | `gravity-code/maps/02_parse_settlement_report_tsv.js` |
-| Map: Build NetSuite Journal Entry Payload | `gravity-code/maps/03_build_journal_entry_payload.js` |
-| Map: Build Failure Memory Payload | `gravity-code/maps/04_build_failure_memory_payload.js` |
-| Map: Build Resolved Failure Memory Payload | `gravity-code/maps/05_build_resolved_failure_memory_payload.js` |
+| Map: Build Financial Event Group Search Request | `gravity-code/maps/03_build_financial_event_group_search_request.js` |
+| Map: Apply Settlement Currency Conversion | `gravity-code/maps/04_apply_settlement_currency_conversion.js` |
+| Map: Build NetSuite Journal Entry Payload | `gravity-code/maps/05_build_journal_entry_payload.js` |
+| Map: Build Failure Memory Payload | `gravity-code/maps/06_build_failure_memory_payload.js` |
+| Map: Build Resolved Failure Memory Payload | `gravity-code/maps/07_build_resolved_failure_memory_payload.js` |
 | NetSuite: Search Existing Journal Entry | `gravity-code/netsuite/01_search_existing_journal_entry.js` |
 | NetSuite: Create Journal Entry | `gravity-code/netsuite/02_create_journal_entry.js` |
 | NetSuite: Attach Settlement CSV | `gravity-code/netsuite/03_attach_settlement_csv.js` |

@@ -70,7 +70,7 @@ Important observations:
 6. Find the matching NetSuite Sales Order using the confirmed Shopify-to-NetSuite matching key.
 7. Load the NetSuite Sales Order and inspect header status plus item-line fulfillment fields.
 8. If fulfillment has begun, send an alert with Shopify change details and NetSuite Sales Order details, then end without updating NetSuite.
-9. If the webhook is a cancellation event, close eligible open NetSuite Sales Order item lines.
+9. If the webhook is a cancellation event, set the NetSuite Sales Order status to Cancelled.
 10. If the webhook is an order edit event, apply only the approved Shopify-to-NetSuite field and line changes.
 11. Log created, updated, skipped, alerted, and failed outcomes.
 12. Send failure emails for app-step failures that require human action.
@@ -120,10 +120,13 @@ Important observations:
 ### Line Items And Item Matching
 
 7. For removed Shopify line items, should NetSuite remove the line, reduce the quantity, or close the line?
-   Why it matters: closing lines is audit-friendly and aligns with NetSuite Sales Order behavior, but it changes open quantity rather than deleting history.
+   Why it matters: removing lines keeps the Sales Order subtotal aligned with Shopify after an edit, while closing preserves history but can leave subtotal differences.
    Implementation impact: this determines the NetSuite item-sublist mutation.
 
-   A: Close the line. We should also reduce the quantity of the line item to 0.
+   A: Remove the NetSuite Sales Order line.
+
+   Follow-up answer:
+   The customer confirmed removed Shopify lines should be removed from the NetSuite Sales Order, not closed.
 
 8. For reduced Shopify quantities, should NetSuite reduce the existing line quantity or close/recreate lines to preserve the original ordered quantity?
    Why it matters: the existing create workflow already uses closed lines to represent already-fulfilled Shopify quantity.
@@ -182,14 +185,14 @@ Important observations:
 
 ### Cancellation Behavior
 
-15. When Shopify cancels an order, should the workflow close all open NetSuite Sales Order item lines and leave fulfilled/billed lines untouched?
-    Why it matters: NetSuite closing is line-based; directly setting a header status is not the normal safe path.
-    Implementation impact: the NetSuite SuiteScript should set `isclosed = true` on eligible item lines.
+15. When Shopify cancels an order, should the workflow close item lines or move the NetSuite Sales Order status to Cancelled?
+    Why it matters: closing all lines can produce a Closed-style state, while the desired business outcome is that the Sales Order itself is Cancelled.
+    Implementation impact: the NetSuite SuiteScript should set Sales Order `orderstatus = C` after eligibility validation.
 
     A: The validation of fulfilled should happen before processing the cancelation. But we should close the sales order on netsuite after the fulfilled validation and that's it.
 
     Follow-up answer:
-    Close the line only. Do not force removed line quantity to `0`.
+    Cancellation means move the Sales Order status to `Cancelled` (`orderstatus = C`), not merely close item lines.
 
 16. Should the workflow write Shopify cancellation reason/date/staff note into a NetSuite field or memo?
     Why it matters: cancellation details are useful for audit and operations.
@@ -263,7 +266,7 @@ Important observations:
 - Treat the workflow as incremental-only, webhook-triggered; no historical backfill.
 - Skip with info log when a webhook order does not have the `exported` tag.
 - Stop and alert when NetSuite fulfillment has begun.
-- Close Sales Order item lines for cancellation instead of deleting the Sales Order.
+- Set Sales Order status to Cancelled for cancellation instead of deleting the Sales Order.
 - Do not update NetSuite financial fields until the explicit edit field mapping is approved.
 - Do not write back to Shopify unless explicitly requested.
 
@@ -277,8 +280,8 @@ Important observations:
 - [x] `exported` tag behavior confirmed.
 - [x] Fulfillment-started eligibility rule confirmed.
 - [x] Fulfillment-started NetSuite status codes confirmed.
-- [x] Cancellation line-close behavior confirmed.
-- [x] Removed lines should be closed only.
+- [x] Cancellation status behavior confirmed: set Sales Order to Cancelled.
+- [x] Removed lines should be removed from the NetSuite Sales Order.
 - [x] Update field mapping approved at field level: use the current proposed mapping.
 - [x] Line item matching behavior approved at business level.
 - [x] Missing SKU behavior approved: skip update and alert.
@@ -304,8 +307,8 @@ Confirmed enough to build:
 - If any fulfillment has begun, stop the whole workflow rather than updating unfulfilled lines.
 - Added Shopify lines should be added to NetSuite when SKU maps to exactly one NetSuite item.
 - Missing SKU should skip the update and alert for manual review.
-- Cancellation should close NetSuite Sales Order lines after the status validation.
-- Removed lines should be closed only; do not force quantity to `0`.
+- Cancellation should set the NetSuite Sales Order status to Cancelled after the status validation.
+- Removed lines should be removed from the NetSuite Sales Order.
 - Cancellation details should be appended to memo.
 - Do not modify Shopify tags.
 - If an updateable field appears to have been manually changed in NetSuite, alert and skip instead of overwriting.
@@ -330,9 +333,10 @@ Use this as the approved field scope unless a later decision narrows it.
 - Shopify shipping address -> NetSuite Sales Order `shippingaddress`.
 - Shopify billing address -> do not update Sales Order billing address if the decision remains "customer info updates the customer, not the order."
 - Shopify discount total -> NetSuite discount handling using the same discount item / discount percent behavior as the create-order workflow.
+- Shopify edit notes from `body.order_edit.staff_note` and line-item discount `description` -> carry through the workflow with destination field `TO_BE_DEFINED`; do not write to NetSuite until the target field is confirmed.
 - Shopify shipping lines -> out of scope; do not create or update NetSuite shipping lines.
 - Shopify shipping cost / shipping method -> out of scope; do not update NetSuite `shippingcost` or `shipmethod` from Shopify edits.
-- Shopify tags, notes, tax, custom attributes -> out of scope.
+- Shopify tags, tax, custom attributes -> out of scope.
 
 Do not update these Sales Order fields:
 
@@ -349,7 +353,7 @@ Do not update these Sales Order fields:
 
 - Shopify line item SKU -> NetSuite item match by SKU.
 - Shopify line quantity increase/decrease -> update existing NetSuite line quantity when the line is still eligible.
-- Shopify removed line -> set NetSuite line `isclosed = true`.
+- Shopify removed line -> remove the NetSuite Sales Order line.
 - Shopify added line with exactly one SKU match -> add new NetSuite item line.
 - Shopify added/revised line with no SKU match or multiple SKU matches -> alert and skip.
 - Shopify line item assigned location / fulfillment location -> update NetSuite line `location` using the same location mapping as the create-order workflow.
@@ -381,7 +385,7 @@ Customer fields that should not change automatically:
 
 - Gravity webhook workflows can run concurrently, so create-or-update and cancellation/update ordering must be designed carefully.
 - If both edit and cancellation webhooks arrive close together, cancellation should probably win, but this must be confirmed.
-- NetSuite cancellation should be implemented by closing item lines, not by deleting the Sales Order.
+- NetSuite cancellation should be implemented by setting the Sales Order status to Cancelled, not by deleting the Sales Order.
 - NetSuite app work should likely use Execute Custom Code for searches and Sales Order mutation.
 - App steps should have Step Completion Option logging and failure emails. Native map/if/loop steps should not receive app-step logging configuration by default.
 - Initial active testing scope is edit only using Shopify order `#68073` / `7202376679490` and NetSuite Sales Order internal ID `47142255`.
@@ -391,7 +395,7 @@ Customer fields that should not change automatically:
 
 - Shopify Admin GraphQL webhook topics: `orders/edited` and `orders/cancelled` are valid webhook topics.
 - Shopify order edit documentation notes that significant order edits can involve line items, quantities, discounts, and shipping lines, and order edits apply only to unfulfilled line items.
-- NetSuite Sales Order closing documentation indicates Sales Orders can be closed by closing item lines; closing affects billing/receiving queues and should be handled carefully.
+- NetSuite Sales Order line removal is the approved behavior for removed edit lines, and Shopify order cancellation should set the Sales Order status to Cancelled.
 
 ## Cancellation Webhook Sample
 
@@ -424,7 +428,7 @@ Implementation notes from the sample:
 - Treat Shopify tags as either a comma-delimited string or an array. The cancellation sample uses the string `Exported`, so the exported-tag check must be case-insensitive.
 - Use `headers.x-shopify-topic` to distinguish cancellation from edit when available.
 - Use `body.name`, not `body.id`, to find the NetSuite Sales Order in `custbody_shopify_ord_id`.
-- For cancellation, the webhook body appears sufficient to proceed to NetSuite lookup/status validation/line close; a Shopify GraphQL fetch is optional unless the live Gravity payload omits required fields.
+- For cancellation, the webhook body appears sufficient to proceed to NetSuite lookup/status validation/status cancellation; a Shopify GraphQL fetch is optional unless the live Gravity payload omits required fields.
 - Do not use `body.line_items.current_quantity` as the source of original ordered quantity on cancellation. Cancelled line items show `current_quantity = 0`, while original ordered quantity remains in `quantity`.
 - Do not process `body.refunds`; the refund workflow owns refund/RMA handling.
 
@@ -450,6 +454,7 @@ Implementation-relevant fields:
 - Staff note: `body.order_edit.staff_note`
 - Line item additions/removals: `body.order_edit.line_items.additions` and `body.order_edit.line_items.removals`
 - Line item discount additions/removals: `body.order_edit.discounts.line_item.additions` and `body.order_edit.discounts.line_item.removals`
+- Line item discount edit note/description: `body.order_edit.discounts.line_item.additions[].description` and removals equivalent.
 - Shipping line additions/removals: present but out of scope
 
 Implementation notes from the edit sample:
@@ -457,6 +462,7 @@ Implementation notes from the edit sample:
 - The edit webhook is a delta payload, not a full Shopify order payload.
 - The sample does not include Shopify order name, tags, addresses, customer details, or full line-item state.
 - For edit processing, the workflow must fetch the full Shopify order by numeric order ID or GID before checking the `Exported` tag or looking up the NetSuite Sales Order by Shopify order name.
+- Staff notes and line-item discount descriptions are available in the edit webhook delta and should be carried forward even before a NetSuite destination field is chosen.
 - The sample edit was a line-item fixed discount addition: `0.01 USD` on Shopify line item ID `17626810548290`.
 - To apply line-level edits safely, the workflow needs either a stored Shopify line item ID on NetSuite lines or a deterministic fallback match by SKU plus line context from the full order.
 - Shipping line edits are ignored because shipping is out of scope.

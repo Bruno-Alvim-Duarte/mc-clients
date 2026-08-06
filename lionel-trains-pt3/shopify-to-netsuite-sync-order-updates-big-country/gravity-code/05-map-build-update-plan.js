@@ -59,8 +59,34 @@ function buildStopPlan(reason, detail, alertLevel = 'warning') {
   }];
 }
 
+function normalizeNoteToCarry(note) {
+  return {
+    source: note.source || 'unknown',
+    label: note.label || 'Shopify edit note',
+    value: String(note.value || '').trim(),
+    destinationFieldId: note.destinationFieldId || 'TO_BE_DEFINED',
+    destinationFieldLabel: note.destinationFieldLabel || 'To be defined',
+    changeType: note.changeType || null,
+    lineItemId: note.lineItemId || null,
+    fixedAmount: note.fixedAmount || null,
+    percentAmount: note.percentAmount || null,
+  };
+}
+
+const notesToCarry = (shopifyOrder.editNotes || shopifyOrder.orderEdit?.notes || [])
+  .map(normalizeNoteToCarry)
+  .filter(note => note.value);
+
 if (!shopifyOrder.name) {
   return buildStopPlan('missing_shopify_order_name', 'Shopify order name is required to find the NetSuite Sales Order.');
+}
+
+if (!shopifyOrder.isEdit && !shopifyOrder.isCancellation) {
+  return buildStopPlan(
+    'unsupported_webhook_topic',
+    `Unsupported Shopify webhook topic for order ${shopifyOrder.name}: ${shopifyOrder.webhook?.topic || shopifyOrder.eventType || 'unknown'}.`,
+    'info'
+  );
 }
 
 if (!shopifyOrder.exported) {
@@ -203,6 +229,8 @@ return [{
     discountItemId: workflowArguments.discountID || null,
     discountPercentFieldId: 'custbody_shopify_disc_pct',
     defaultLocationId: workflowArguments.defaultLocationID || null,
+    notesToCarry,
+    notesDestinationStatus: notesToCarry.length ? 'destination_field_to_be_defined' : 'no_notes',
     memoNote: `Shopify edit synced for ${shopifyOrder.name} at ${new Date().toISOString()}`,
   },
 }];

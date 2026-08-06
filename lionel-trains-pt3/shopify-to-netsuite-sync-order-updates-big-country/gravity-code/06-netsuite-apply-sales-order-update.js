@@ -81,26 +81,22 @@ function execute() {
       return true;
     }
 
-    function closeAllItemLines() {
-      const lineCount = salesOrder.getLineCount({ sublistId: 'item' });
-      let closedCount = 0;
+    function cancelSalesOrder() {
+      const previousStatus = salesOrder.getValue({ fieldId: 'orderstatus' });
 
-      for (let i = 0; i < lineCount; i++) {
-        salesOrder.selectLine({ sublistId: 'item', line: i });
-        const isClosed = salesOrder.getCurrentSublistValue({ sublistId: 'item', fieldId: 'isclosed' }) === true;
-        if (!isClosed) {
-          salesOrder.setCurrentSublistValue({
-            sublistId: 'item',
-            fieldId: 'isclosed',
-            value: true,
-            forceSyncSourcing: true,
-          });
-          closedCount++;
-        }
-        salesOrder.commitLine({ sublistId: 'item' });
-      }
+      // NetSuite Sales Order compact status code C = Cancelled.
+      // Use the header status for Shopify order cancellations instead of
+      // closing item lines, because closing all lines can produce a Closed
+      // status and does not represent the Shopify cancellation state.
+      salesOrder.setValue({
+        fieldId: 'orderstatus',
+        value: 'C',
+      });
 
-      return closedCount;
+      return {
+        previousStatus,
+        targetStatus: 'C',
+      };
     }
 
     function getProductSubtotal(discountItemId) {
@@ -173,11 +169,13 @@ function execute() {
     function applyEdit() {
       const edit = plan.edit || {};
       const targetLines = edit.targetLines || [];
+      const notesToCarry = Array.isArray(edit.notesToCarry) ? edit.notesToCarry : [];
       const discountItemId = edit.discountItemId ? String(edit.discountItemId) : '';
       const usedExistingLines = {};
+      const keptLineIndexes = {};
       let updatedLineCount = 0;
       let addedLineCount = 0;
-      let closedLineCount = 0;
+      let removedLineCount = 0;
 
       if (edit.shippingAddress) {
         setSubrecordAddress('shippingaddress', edit.shippingAddress);
@@ -205,8 +203,10 @@ function execute() {
         if (existingLine >= 0) {
           salesOrder.selectLine({ sublistId: 'item', line: existingLine });
           usedExistingLines[existingLine] = true;
+          keptLineIndexes[existingLine] = true;
           updatedLineCount++;
         } else {
+          keptLineIndexes[lineCount] = true;
           salesOrder.selectNewLine({ sublistId: 'item' });
           salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: Number(targetItemId), forceSyncSourcing: true });
           addedLineCount++;
@@ -224,21 +224,17 @@ function execute() {
         salesOrder.commitLine({ sublistId: 'item' });
       });
 
-      const targetItemIds = {};
-      targetLines.forEach(function(target) {
-        if (target.netsuiteItemId) targetItemIds[String(target.netsuiteItemId)] = true;
-      });
-
       const finalLineCount = salesOrder.getLineCount({ sublistId: 'item' });
-      for (let i = 0; i < finalLineCount; i++) {
+      for (let i = finalLineCount - 1; i >= 0; i--) {
         const item = String(salesOrder.getSublistValue({ sublistId: 'item', fieldId: 'item', line: i }) || '');
-        const isClosed = salesOrder.getSublistValue({ sublistId: 'item', fieldId: 'isclosed', line: i }) === true;
-        if (isClosed || (discountItemId && item === discountItemId) || targetItemIds[item]) continue;
+        if ((discountItemId && item === discountItemId) || keptLineIndexes[i]) continue;
 
-        salesOrder.selectLine({ sublistId: 'item', line: i });
-        salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'isclosed', value: true, forceSyncSourcing: true });
-        salesOrder.commitLine({ sublistId: 'item' });
-        closedLineCount++;
+        salesOrder.removeLine({
+          sublistId: 'item',
+          line: i,
+          ignoreRecalc: false,
+        });
+        removedLineCount++;
       }
 
       const discountResult = setDiscount(
@@ -253,7 +249,9 @@ function execute() {
       return {
         updatedLineCount,
         addedLineCount,
-        closedLineCount,
+        removedLineCount,
+        notesToCarry,
+        notesDestinationStatus: notesToCarry.length ? 'destination_field_to_be_defined' : 'no_notes',
         discountResult,
       };
     }
@@ -261,7 +259,7 @@ function execute() {
     let mutationResult = {};
 
     if (plan.action === 'apply_cancellation') {
-      mutationResult.closedLineCount = closeAllItemLines();
+      mutationResult = cancelSalesOrder();
       appendMemo(plan.cancellation && plan.cancellation.memoNote);
     } else if (plan.action === 'apply_edit') {
       mutationResult = applyEdit();

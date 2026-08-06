@@ -1,12 +1,11 @@
 // Gravity map step: Build NetSuite Journal Entry payload from parsed settlement.
 // Expected input:
 // - input.mapBuildRuntimeConfig[0] from "Build Runtime Config"
-// - input.mapParseSettlementReportTsv[0]
+// - input.mapApplySettlementCurrencyConversion[0]
 //
-// Replace mapBuildRuntimeConfig and mapParseSettlementReportTsv with actual Gravity step keys.
+// Replace mapBuildRuntimeConfig and mapApplySettlementCurrencyConversion with actual Gravity step keys.
 
 const runtimeConfig = (input.mapF0FK || [])[0] || {};
-const settlement = (input.mapXTUO || [])[0] || {};
 
 const CONFIG = {
   subsidiaryId: "4",
@@ -32,6 +31,96 @@ if (runtimeConfig.netsuite) {
 if (runtimeConfig.behavior) {
   CONFIG.moneyTolerance = runtimeConfig.behavior.moneyTolerance || CONFIG.moneyTolerance;
 }
+
+function normalizeCurrency(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function firstFromStep(stepValue) {
+  return Array.isArray(stepValue) ? stepValue[0] : stepValue;
+}
+
+function isSettlementLike(value) {
+  return value &&
+    typeof value === "object" &&
+    value.settlementId &&
+    value.externalId &&
+    value.totalAmount !== undefined &&
+    Array.isArray(value.categories);
+}
+
+function collectSettlementCandidates(inputValue) {
+  const candidates = [];
+
+  Object.keys(inputValue || {}).forEach(key => {
+    const value = inputValue[key];
+
+    if (Array.isArray(value)) {
+      value.forEach(item => {
+        if (isSettlementLike(item)) {
+          candidates.push({ key, value: item });
+        }
+      });
+      return;
+    }
+
+    if (isSettlementLike(value)) {
+      candidates.push({ key, value });
+    }
+  });
+
+  return candidates;
+}
+
+function pickSettlementPayload() {
+  const targetCurrencyCode = normalizeCurrency(
+    runtimeConfig.netsuite &&
+    runtimeConfig.netsuite.journalEntryCurrencyCode ||
+    "USD"
+  );
+
+  const namedCandidates = [
+    { key: "mapApplySettlementCurrencyConversion", value: firstFromStep(input.mapApplySettlementCurrencyConversion) },
+    { key: "mapCurrencyConversion", value: firstFromStep(input.mapCurrencyConversion) },
+    { key: "mapXTUO", value: firstFromStep(input.mapXTUO) }
+  ].filter(candidate => isSettlementLike(candidate.value));
+
+  const allCandidates = [
+    ...namedCandidates,
+    ...collectSettlementCandidates(input).filter(candidate =>
+      !namedCandidates.some(named => named.key === candidate.key)
+    )
+  ];
+
+  const convertedCandidate = allCandidates.find(candidate =>
+    normalizeCurrency(candidate.value.currency) === targetCurrencyCode &&
+    (
+      candidate.value.currencyConversion ||
+      candidate.key !== "mapXTUO"
+    )
+  );
+
+  if (convertedCandidate) return convertedCandidate.value;
+
+  const supportedCandidate = allCandidates.find(candidate =>
+    CONFIG.currencyByCode[normalizeCurrency(candidate.value.currency)]
+  );
+
+  if (supportedCandidate) return supportedCandidate.value;
+
+  const parsedCandidate = namedCandidates.find(candidate => candidate.key === "mapXTUO");
+
+  if (parsedCandidate) {
+    throw new Error(
+      `Missing converted settlement payload for settlement ${parsedCandidate.value.settlementId}. ` +
+      `Parsed settlement currency is ${parsedCandidate.value.currency}; Build Journal Entry Payload must receive the output from Apply Settlement Currency Conversion.`
+    );
+  }
+
+  return {};
+}
+
+const settlement = pickSettlementPayload();
 
 function roundMoney(value) {
   return Math.round(Number(value || 0) * 100) / 100;
@@ -118,6 +207,15 @@ function totalCredits(lines) {
   return roundMoney(lines.reduce((sum, line) => sum + Number(line.credit || 0), 0));
 }
 
+function getCurrencyId(currencyCode) {
+  const normalizedCurrencyCode = normalizeCurrency(currencyCode);
+  const matchingCode = Object.keys(CONFIG.currencyByCode || {}).find(code =>
+    normalizeCurrency(code) === normalizedCurrencyCode
+  );
+
+  return matchingCode ? CONFIG.currencyByCode[matchingCode] : null;
+}
+
 if (!settlement.settlementId) {
   throw new Error("Missing parsed settlement payload");
 }
@@ -126,7 +224,7 @@ if (!settlement.canCreateJournalEntry) {
   throw new Error(`Settlement ${settlement.settlementId} is not createable: ${(settlement.errors || []).join("; ")}`);
 }
 
-const currencyId = CONFIG.currencyByCode[settlement.currency];
+const currencyId = getCurrencyId(settlement.currency);
 
 if (!currencyId) {
   throw new Error(`Unsupported NetSuite currency for settlement ${settlement.settlementId}: ${settlement.currency}`);
@@ -202,6 +300,10 @@ return [{
   lineCount: lines.length,
   categoryCount: (settlement.categories || []).length,
   cashSummary: settlement.cashSummary,
+  currencyConversion: settlement.currencyConversion || null,
+  sourceCurrency: settlement.sourceCurrency || settlement.currency,
+  originalCurrency: settlement.originalCurrency || settlement.currency,
+  originalTotalAmount: settlement.originalTotalAmount,
   catchAllRows: settlement.catchAllRows || [],
   taxSummary: settlement.taxSummary,
   payload

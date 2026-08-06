@@ -4,6 +4,14 @@ Write the final review in English.
 
 ## Format
 
+When working in a local workspace, create or update a Markdown file for the turnover review by default. Prefer a workflow-specific folder name and a descriptive file name:
+
+```text
+<workflow-slug>/<workflow-slug>-turnover.md
+```
+
+If a clearer file name is warranted, use it, but keep the artifact local and easy to find. The chat response should summarize the file path and only the most important next step.
+
 Use this structure:
 
 ```markdown

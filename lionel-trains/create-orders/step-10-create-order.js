@@ -13,6 +13,8 @@ function execute() {
     const NETSUITE_CSEG_DIVISION = wfArguments.divisionID;
     const NETSUITE_ORDER_CLASS_ID = wfArguments.orderClassID;
     const NETSUITE_LOCATION_ID = wfArguments.locationID;
+    const NETSUITE_DEPARTMENT_ID =
+      Number(wfArguments.departmentID) || 34;
     const NETSUITE_CONCORD_LOCATION_ID = NETSUITE_LOCATION_ID;
     const NETSUITE_AMAZON_LOCATION_ID = 152;
     const DEFAULT_CURRENCY_ID = 1;
@@ -700,6 +702,15 @@ function execute() {
         });
       }
 
+      if (NETSUITE_DEPARTMENT_ID) {
+        salesOrderRec.setCurrentSublistValue({
+          sublistId: 'item',
+          fieldId: 'department',
+          value: NETSUITE_DEPARTMENT_ID,
+          forceSyncSourcing: true
+        });
+      }
+
       salesOrderRec.setCurrentSublistValue({
         sublistId: 'item',
         fieldId: 'quantity',
@@ -780,6 +791,15 @@ function execute() {
           sublistId: 'item',
           fieldId: 'location',
           value: targetLocationId,
+          forceSyncSourcing: true
+        });
+      }
+
+      if (NETSUITE_DEPARTMENT_ID) {
+        salesOrderRec.setCurrentSublistValue({
+          sublistId: 'item',
+          fieldId: 'department',
+          value: NETSUITE_DEPARTMENT_ID,
           forceSyncSourcing: true
         });
       }
@@ -1218,7 +1238,7 @@ function execute() {
 
     salesOrderRec.setValue({
       fieldId: 'department',
-      value: 34
+      value: NETSUITE_DEPARTMENT_ID
     });
 
     // -----------------------------
@@ -1346,6 +1366,12 @@ function execute() {
       salesOrderRec.setValue({
         fieldId: 'shippingcost',
         value: shippingAmount
+      });
+
+      salesOrderRec.setValue({
+        fieldId: 'department',
+        value: NETSUITE_DEPARTMENT_ID,
+        ignoreFieldChange: true
       });
     }
 

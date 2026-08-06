@@ -9,7 +9,11 @@
 
 const runtimeConfig = (input.mapF0FK || [])[0] || {};
 const jePayload = (input.mapWLLK || [])[0] || {};
-const settlement = (input.mapXTUO || [])[0] || {};
+const settlement =
+  (input.mapApplySettlementCurrencyConversion || [])[0] ||
+  (input.mapCurrencyConversion || [])[0] ||
+  (input.mapXTUO || [])[0] ||
+  {};
 const createResult = (input.netsuiteExecuteCustomCodeYDBY || [])[0] || {};
 const attachResult = (input.netsuiteExecuteCustomCode29SZ || [])[0] || {};
 const existingFailureState =

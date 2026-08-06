@@ -1,0 +1,820 @@
+workflow:
+  name: Shopify to NetSuite - Sync Order Updates (Big Country)
+  id: HPTKqqcNXOUo
+  version: draft
+  isActive: false
+  publishedOn: 2026-07-29T22:02:21.000Z
+triggers:
+  - name: Webhook - Webhook - Shopify Order Updates
+    type: webhook
+    message: Webhook - Shopify Order Updates
+steps:
+  - stepNumber: 1
+    name: Map - Map - Normalize Webhook
+    input: OoB45GUTKPzv
+    results: 1
+    type: map
+    code: |
+      const WORKFLOW_NAME = 'Shopify to NetSuite - Sync Order Updates (Big Country)';
+      const ALERT_RECIPIENTS = 'bruno@mindcloud.co,AMiller@lionel.com,jjones@lionel.com';
+
+      function findWebhookEnvelope(source) {
+        if (!source || typeof source !== 'object') return {};
+
+        const candidates = [
+          source.webhook,
+          source.trigger,
+          source.request,
+          source.body,
+          source.workflowArguments?.testWebhook,
+        ];
+
+        for (const candidate of candidates) {
+          const item = Array.isArray(candidate) ? candidate[0] : candidate;
+          if (item && typeof item === 'object' && (item.headers || item.body)) {
+            return item;
+          }
+        }
+
+        for (const value of Object.values(source)) {
+          const item = Array.isArray(value) ? value[0] : value;
+          if (item && typeof item === 'object' && (item.headers || item.body)) {
+            return item;
+          }
+        }
+
+        return {};
+      }
+
+      function lastGidPart(value) {
+        if (!value) return null;
+        return String(value).split('/').pop();
+      }
+
+      function asGid(type, numericId) {
+        return numericId ? `gid://shopify/${type}/${numericId}` : null;
+      }
+
+      function parseTags(value) {
+        if (Array.isArray(value)) return value.map(String);
+        if (!value) return [];
+        return String(value)
+          .split(',')
+          .map(tag => tag.trim())
+          .filter(Boolean);
+      }
+
+      const envelope = findWebhookEnvelope(input);
+      const headers = envelope.headers || {};
+      const body = envelope.body || {};
+      const orderEdit = body.order_edit || {};
+      const topic = String(headers['x-shopify-topic'] || headers['X-Shopify-Topic'] || '').trim();
+
+      const orderNumericId = String(
+        headers['x-shopify-order-id'] ||
+          headers['X-Shopify-Order-Id'] ||
+          orderEdit.order_id ||
+          body.id ||
+          ''
+      ).trim();
+
+      const orderGid =
+        body.admin_graphql_api_id ||
+        orderEdit.admin_graphql_api_id ||
+        asGid('Order', orderNumericId);
+
+      const isEdit = topic === 'orders/edited' || !!body.order_edit;
+      const isCancellation = topic === 'orders/cancelled' || !!body.cancelled_at;
+
+      return [{
+        workflowName: WORKFLOW_NAME,
+        alertRecipients: ALERT_RECIPIENTS,
+        webhook: {
+          topic,
+          eventId: headers['x-shopify-event-id'] || null,
+          webhookId: headers['x-shopify-webhook-id'] || null,
+          triggeredAt: headers['x-shopify-triggered-at'] || null,
+          shopDomain: headers['x-shopify-shop-domain'] || null,
+          method: envelope.method || null,
+          url: envelope.url || null,
+        },
+        eventType: isCancellation ? 'cancellation' : isEdit ? 'edit' : 'unknown',
+        isEdit,
+        isCancellation,
+        order: {
+          numericId: orderNumericId || lastGidPart(orderGid),
+          gid: orderGid,
+          name: body.name || null,
+          tags: parseTags(body.tags),
+          cancelReason: body.cancel_reason || null,
+          cancelledAt: body.cancelled_at || null,
+          closedAt: body.closed_at || null,
+          updatedAt: body.updated_at || null,
+        },
+        orderEdit: isEdit ? {
+          id: orderEdit.id || null,
+          appId: orderEdit.app_id || null,
+          createdAt: orderEdit.created_at || null,
+          committedAt: orderEdit.committed_at || null,
+          staffNote: orderEdit.staff_note || '',
+          notifyCustomer: !!orderEdit.notify_customer,
+          lineItems: orderEdit.line_items || { additions: [], removals: [] },
+          discounts: orderEdit.discounts || {},
+          shippingLines: orderEdit.shipping_lines || { additions: [], removals: [] },
+        } : null,
+        rawBody: body,
+      }];
+  - stepNumber: 2
+    name: If/Else - If - Event Is Edit
+    results: 1
+    type: conditional
+    condition: "[Step 1: input[0].isEdit] = true"
+    branches:
+      "false":
+        - stepNumber: 5
+          name: Flow Control - Future - Cancellation Path (Not Yet Enabled)
+          type: action
+          args:
+            - label: Action
+              value: endAsSuccess
+            - label: Emit Log
+              value: Yes
+            - label: Log Type
+              value: warning
+            - label: Log Message
+              value: "[Shopify] Cancellation path not yet enabled - event ignored...."
+      "true":
+        - stepNumber: 3
+          name: Map - Map - Build Shopify Full Order Query
+          input: Step 1
+          results: 1
+          type: map
+          code: |
+            const normalized = input['mapLR5J']?.[0] || {};
+
+            const orderGid =
+              normalized.order?.gid ||
+              (normalized.order?.numericId ? `gid://shopify/Order/${normalized.order.numericId}` : null);
+
+            const query = `
+            query GetOrderForNetSuiteUpdate($id: ID!) {
+              order(id: $id) {
+                id
+                legacyResourceId
+                name
+                tags
+                createdAt
+                updatedAt
+                cancelledAt
+                cancelReason
+                displayFinancialStatus
+                displayFulfillmentStatus
+                sourceName
+                email
+                phone
+                note
+                currentTotalDiscountsSet {
+                  shopMoney { amount currencyCode }
+                }
+                totalDiscountsSet {
+                  shopMoney { amount currencyCode }
+                }
+                currentTotalPriceSet {
+                  shopMoney { amount currencyCode }
+                }
+                totalPriceSet {
+                  shopMoney { amount currencyCode }
+                }
+                totalShippingPriceSet {
+                  shopMoney { amount currencyCode }
+                }
+                customer {
+                  id
+                  legacyResourceId
+                  firstName
+                  lastName
+                  email
+                  phone
+                }
+                billingAddress {
+                  firstName
+                  lastName
+                  name
+                  company
+                  address1
+                  address2
+                  city
+                  province
+                  provinceCode
+                  country
+                  countryCodeV2
+                  zip
+                  phone
+                }
+                shippingAddress {
+                  firstName
+                  lastName
+                  name
+                  company
+                  address1
+                  address2
+                  city
+                  province
+                  provinceCode
+                  country
+                  countryCodeV2
+                  zip
+                  phone
+                }
+                lineItems(first: 250) {
+                  edges {
+                    node {
+                      id
+                      sku
+                      title
+                      name
+                      quantity
+                      currentQuantity
+                      fulfillableQuantity
+                      requiresShipping
+                      taxable
+                      vendor
+                      originalUnitPriceSet {
+                        shopMoney { amount currencyCode }
+                      }
+                      discountedTotalSet {
+                        shopMoney { amount currencyCode }
+                      }
+                      variant {
+                        id
+                        sku
+                      }
+                      product {
+                        id
+                      }
+                    }
+                  }
+                }
+                fulfillmentOrders(first: 50) {
+                  edges {
+                    node {
+                      id
+                      status
+                      assignedLocation {
+                        location {
+                          id
+                          name
+                        }
+                      }
+                      lineItems(first: 250) {
+                        edges {
+                          node {
+                            id
+                            totalQuantity
+                            remainingQuantity
+                            lineItem {
+                              id
+                              sku
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }`;
+
+            return [{
+              shouldFetchShopifyOrder: !!normalized.isEdit,
+              orderGid,
+              query,
+              variables: {
+                id: orderGid,
+              },
+            }];
+        - stepNumber: 4
+          name: Shopify - Shopify - GraphQL Beta - Get Full Order
+          results: 1
+          type: action
+          args:
+            - label: Query
+              value: "[Step 3: input[0].query]"
+            - label: Variables
+              value: "[Step 3: input[0].variables]"
+  - stepNumber: 6
+    name: Map - Map - Normalize Shopify Order
+    input: Step 1, Step 4
+    results: 1
+    type: map
+    code: |
+      const webhook = input['mapLR5J']?.[0] || {};
+      const graphqlResponse = input['shopifyGraphqlBetaGJWP']?.[0] || {};
+      const workflowArguments = input.workflowArguments || {};
+      const NETSUITE_AMAZON_LOCATION_ID = 152;
+      const SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES = {
+        'gid://shopify/Location/72788476094': NETSUITE_AMAZON_LOCATION_ID,
+        'gid://shopify/Location/76447547458': 32,
+        'gid://shopify/Location/83979403454': 126,
+      };
+
+      function nodes(connectionOrArray) {
+        if (!connectionOrArray) return [];
+        if (Array.isArray(connectionOrArray)) return connectionOrArray;
+        if (Array.isArray(connectionOrArray.nodes)) return connectionOrArray.nodes;
+        if (Array.isArray(connectionOrArray.edges)) {
+          return connectionOrArray.edges.map(edge => edge && edge.node).filter(Boolean);
+        }
+        return [];
+      }
+
+      function money(value) {
+        const amount =
+          value?.shopMoney?.amount ||
+          value?.shop_money?.amount ||
+          value?.amount ||
+          null;
+
+        if (amount === null || amount === undefined || amount === '') return 0;
+        const num = Number(amount);
+        return Number.isFinite(num) ? num : 0;
+      }
+
+      function lastGidPart(value) {
+        if (!value) return null;
+        return String(value).split('/').pop();
+      }
+
+      function normalizeAddress(address) {
+        if (!address) return null;
+        return {
+          firstName: address.firstName || address.first_name || '',
+          lastName: address.lastName || address.last_name || '',
+          name: address.name || [address.firstName || address.first_name, address.lastName || address.last_name].filter(Boolean).join(' '),
+          company: address.company || '',
+          address1: address.address1 || '',
+          address2: address.address2 || '',
+          city: address.city || '',
+          province: address.province || '',
+          provinceCode: address.provinceCode || address.province_code || '',
+          country: address.country || '',
+          countryCodeV2: address.countryCodeV2 || address.country_code || '',
+          zip: address.zip || '',
+          phone: address.phone || '',
+        };
+      }
+
+      function parseTags(value) {
+        if (Array.isArray(value)) return value.map(String);
+        if (!value) return [];
+        return String(value).split(',').map(tag => tag.trim()).filter(Boolean);
+      }
+
+      function getGraphqlOrder(response) {
+        return response?.data?.order || response?.order || response?.body?.data?.order || null;
+      }
+
+      function getRestOrderFromWebhook(webhookRecord) {
+        const body = webhookRecord.rawBody || {};
+        if (body.order_edit) return null;
+        return body;
+      }
+
+      function buildFulfillmentLocationByLineItem(order) {
+        const byLineItemId = {};
+
+        for (const fulfillmentOrder of nodes(order?.fulfillmentOrders)) {
+          const location = fulfillmentOrder?.assignedLocation?.location || {};
+          const shopifyLocationId = location.id || null;
+
+          for (const fulfillmentLine of nodes(fulfillmentOrder?.lineItems)) {
+            const lineItem = fulfillmentLine?.lineItem || {};
+            const ids = [
+              lineItem.id,
+              lineItem.legacyResourceId,
+              lineItem.id ? lastGidPart(lineItem.id) : null,
+            ].filter(Boolean).map(String);
+
+            for (const id of ids) {
+            byLineItemId[id] = {
+              shopifyLocationId,
+              shopifyLocationLegacyId: location.legacyResourceId || lastGidPart(location.id),
+              shopifyLocationName: location.name || '',
+              netsuiteLocationId:
+                SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES[shopifyLocationId] ||
+                workflowArguments.locationID ||
+                null,
+            };
+          }
+        }
+        }
+
+        return byLineItemId;
+      }
+
+      const sourceOrder = getGraphqlOrder(graphqlResponse) || getRestOrderFromWebhook(webhook) || {};
+      const fulfillmentLocationByLineItem = buildFulfillmentLocationByLineItem(sourceOrder);
+
+      const lineItems = nodes(sourceOrder.lineItems || sourceOrder.line_items).map(line => {
+        const id = line.id || line.admin_graphql_api_id || null;
+        const legacyResourceId = line.legacyResourceId || line.id || line.line_item_id || lastGidPart(id);
+        const location =
+          fulfillmentLocationByLineItem[String(id)] ||
+          fulfillmentLocationByLineItem[String(legacyResourceId)] ||
+          fulfillmentLocationByLineItem[String(lastGidPart(id))] ||
+          null;
+
+        return {
+          id,
+          legacyResourceId,
+          numericId: legacyResourceId ? String(legacyResourceId) : lastGidPart(id),
+          sku: String(line.sku || line.variant?.sku || '').trim(),
+          title: line.title || line.name || '',
+          name: line.name || line.title || '',
+          quantity: Number(line.currentQuantity ?? line.current_quantity ?? line.quantity ?? 0),
+          originalQuantity: Number(line.quantity ?? 0),
+          fulfillableQuantity: Number(line.fulfillableQuantity ?? line.fulfillable_quantity ?? 0),
+          originalUnitPrice: money(line.originalUnitPriceSet || line.price_set || { amount: line.price }),
+          discountedTotal: money(line.discountedTotalSet || line.pre_tax_price_set || { amount: line.pre_tax_price }),
+          taxable: line.taxable !== false,
+          requiresShipping: line.requiresShipping ?? line.requires_shipping ?? true,
+          vendor: line.vendor || '',
+          variantId: line.variant?.id || line.variant_id || null,
+          productId: line.product?.id || line.product_id || null,
+          fulfillmentLocation: location,
+        };
+      }).filter(line => line.sku || line.quantity > 0 || line.id);
+
+      const tags = parseTags(sourceOrder.tags || webhook.order?.tags);
+      const orderName = sourceOrder.name || webhook.order?.name || null;
+      const numericId = String(sourceOrder.legacyResourceId || sourceOrder.id || webhook.order?.numericId || '').split('/').pop();
+
+      return [{
+        workflowName: webhook.workflowName,
+        alertRecipients: webhook.alertRecipients,
+        webhook: webhook.webhook,
+        eventType: webhook.eventType,
+        isEdit: webhook.isEdit,
+        isCancellation: webhook.isCancellation,
+        exported: tags.some(tag => String(tag).trim().toLowerCase() === 'exported'),
+        id: sourceOrder.id || webhook.order?.gid || null,
+        numericId,
+        name: orderName,
+        tags,
+        createdAt: sourceOrder.createdAt || sourceOrder.created_at || null,
+        updatedAt: sourceOrder.updatedAt || sourceOrder.updated_at || webhook.order?.updatedAt || null,
+        cancelledAt: sourceOrder.cancelledAt || sourceOrder.cancelled_at || webhook.order?.cancelledAt || null,
+        cancelReason: sourceOrder.cancelReason || sourceOrder.cancel_reason || webhook.order?.cancelReason || null,
+        financialStatus: sourceOrder.displayFinancialStatus || sourceOrder.financial_status || '',
+        fulfillmentStatus: sourceOrder.displayFulfillmentStatus || sourceOrder.fulfillment_status || '',
+        sourceName: sourceOrder.sourceName || sourceOrder.source_name || '',
+        email: sourceOrder.email || '',
+        phone: sourceOrder.phone || '',
+        note: sourceOrder.note || '',
+        customer: sourceOrder.customer || null,
+        billingAddress: normalizeAddress(sourceOrder.billingAddress || sourceOrder.billing_address),
+        shippingAddress: normalizeAddress(sourceOrder.shippingAddress || sourceOrder.shipping_address),
+        lineItems,
+        discountAmount: money(sourceOrder.currentTotalDiscountsSet || sourceOrder.current_total_discounts_set || sourceOrder.totalDiscountsSet || sourceOrder.total_discounts_set),
+        totalAmount: money(sourceOrder.currentTotalPriceSet || sourceOrder.current_total_price_set || sourceOrder.totalPriceSet || sourceOrder.total_price_set),
+        shippingAmount: money(sourceOrder.totalShippingPriceSet || sourceOrder.total_shipping_price_set),
+        orderEdit: webhook.orderEdit,
+        rawCancellationBody: webhook.isCancellation ? webhook.rawBody : null,
+      }];
+  - stepNumber: 7
+    name: Netsuite - NetSuite - Find Sales Order And Items
+    results: 1
+    type: action
+  - stepNumber: 8
+    name: Map - Map - Build Update Plan
+    input: Step 6, Step 7
+    results: 1
+    type: map
+    code: |
+      const shopifyOrder = input['mapCPX5']?.[0] || {};
+      const netsuiteLookup = input['netsuiteExecuteCustomCodePYKM']?.[0] || {};
+      const workflowArguments = input.workflowArguments || {};
+
+      // NetSuite orderstatus returns the compact Sales Order status code in this
+      // Gravity/SuiteScript context, not the full search statusref value.
+      // A = Pending Approval: safe to update.
+      // B = Pending Fulfillment: safe to update.
+      const ALLOWED_STATUS_REFS = new Set(['A', 'B']);
+
+      // C = Cancelled: already cancelled, do not process again.
+      // D = Partially Fulfilled: fulfillment has started, stop and alert.
+      // E = Pending Billing / Partially Fulfilled: fulfillment has started, stop and alert.
+      // F = Pending Billing / Fully Fulfilled or Billed / Fully Fulfilled: fulfillment is complete, stop and alert.
+      // H = Closed: order is closed, stop and alert.
+      const INELIGIBLE_STATUS_REFS = new Set(['C', 'D', 'E', 'F', 'H']);
+
+      function roundMoney(value) {
+        return Math.round((Number(value) || 0) * 100) / 100;
+      }
+
+      function normalizeSku(value) {
+        return String(value || '').trim();
+      }
+
+      function normalizeSkuKey(value) {
+        return normalizeSku(value).toLowerCase();
+      }
+
+      function duplicateValues(values) {
+        const seen = new Set();
+        const dupes = new Set();
+        for (const rawValue of values) {
+          const value = normalizeSkuKey(rawValue);
+          if (!value) continue;
+          if (seen.has(value)) dupes.add(rawValue);
+          seen.add(value);
+        }
+        return Array.from(dupes);
+      }
+
+      function buildStopPlan(reason, detail, alertLevel = 'warning') {
+        return [{
+          workflowName: shopifyOrder.workflowName,
+          alertRecipients: shopifyOrder.alertRecipients,
+          action: 'stop',
+          canApply: false,
+          shouldAlert: alertLevel !== 'info',
+          alertLevel,
+          reason,
+          detail,
+          eventType: shopifyOrder.eventType,
+          shopifyOrder: {
+            id: shopifyOrder.id,
+            numericId: shopifyOrder.numericId,
+            name: shopifyOrder.name,
+          },
+          netsuite: netsuiteLookup,
+        }];
+      }
+
+      if (!shopifyOrder.name) {
+        return buildStopPlan('missing_shopify_order_name', 'Shopify order name is required to find the NetSuite Sales Order.');
+      }
+
+      if (!shopifyOrder.exported) {
+        return buildStopPlan('not_exported', `Shopify order ${shopifyOrder.name} does not have the Exported tag.`, 'info');
+      }
+
+      if (!netsuiteLookup.success) {
+        return buildStopPlan('netsuite_lookup_failed', netsuiteLookup.message || 'NetSuite Sales Order lookup failed.', 'error');
+      }
+
+      if (!netsuiteLookup.found || netsuiteLookup.duplicate) {
+        return buildStopPlan(
+          netsuiteLookup.duplicate ? 'duplicate_sales_order' : 'sales_order_not_found',
+          netsuiteLookup.message || `NetSuite Sales Order not found for Shopify order ${shopifyOrder.name}.`
+        );
+      }
+
+      const salesOrder = netsuiteLookup.salesOrder || {};
+      const statusRef = salesOrder.orderStatus || salesOrder.statusRef || '';
+
+      if (!ALLOWED_STATUS_REFS.has(statusRef)) {
+        const statusKnownIneligible = INELIGIBLE_STATUS_REFS.has(statusRef);
+        return buildStopPlan(
+          statusKnownIneligible ? 'sales_order_status_ineligible' : 'sales_order_status_unknown',
+          `NetSuite Sales Order ${salesOrder.tranid || salesOrder.internalId} is ${salesOrder.orderStatusText || salesOrder.statusText || statusRef}. Only Pending Approval and Pending Fulfillment are eligible.`
+        );
+      }
+
+      if (shopifyOrder.isCancellation) {
+        return [{
+          workflowName: shopifyOrder.workflowName,
+          alertRecipients: shopifyOrder.alertRecipients,
+          action: 'apply_cancellation',
+          canApply: true,
+          shouldAlert: false,
+          eventType: 'cancellation',
+          shopifyOrder: {
+            id: shopifyOrder.id,
+            numericId: shopifyOrder.numericId,
+            name: shopifyOrder.name,
+            cancelledAt: shopifyOrder.cancelledAt,
+            cancelReason: shopifyOrder.cancelReason,
+          },
+          netsuite: {
+            salesOrder,
+            lines: netsuiteLookup.lines || [],
+          },
+          cancellation: {
+            memoNote: [
+              `Shopify cancellation received for ${shopifyOrder.name}`,
+              shopifyOrder.cancelReason ? `reason: ${shopifyOrder.cancelReason}` : null,
+              shopifyOrder.cancelledAt ? `cancelled at: ${shopifyOrder.cancelledAt}` : null,
+            ].filter(Boolean).join(' | '),
+          },
+        }];
+      }
+
+      const activeShopifyLines = (shopifyOrder.lineItems || [])
+        .map(line => ({
+          ...line,
+          sku: normalizeSku(line.sku),
+          quantity: Number(line.quantity || 0),
+          originalUnitPrice: roundMoney(line.originalUnitPrice || 0),
+        }))
+        .filter(line => line.sku && line.quantity > 0);
+
+      if (!activeShopifyLines.length) {
+        return buildStopPlan('no_active_shopify_lines', `No active Shopify lines found for order ${shopifyOrder.name}.`);
+      }
+
+      const duplicateShopifySkus = duplicateValues(activeShopifyLines.map(line => line.sku));
+      if (duplicateShopifySkus.length) {
+        return buildStopPlan('duplicate_shopify_skus', `Cannot safely update by SKU because Shopify has duplicate active SKUs: ${duplicateShopifySkus.join(', ')}.`);
+      }
+
+      const itemMatchesBySku = netsuiteLookup.itemMatchesBySku || {};
+      const itemMatchesByNormalizedSku = Object.keys(itemMatchesBySku).reduce((acc, sku) => {
+        acc[normalizeSkuKey(sku)] = itemMatchesBySku[sku];
+        return acc;
+      }, {});
+      const missingSkus = [];
+      const duplicateNetSuiteSkus = [];
+
+      const targetLines = activeShopifyLines.map(line => {
+        const match = itemMatchesByNormalizedSku[normalizeSkuKey(line.sku)] || { count: 0, matches: [] };
+        if (match.count === 0) missingSkus.push(line.sku);
+        if (match.count > 1) duplicateNetSuiteSkus.push(line.sku);
+
+        return {
+          shopifyLineItemId: line.id,
+          shopifyLineItemNumericId: line.numericId,
+          sku: line.sku,
+          title: line.title || line.name || line.sku,
+          quantity: line.quantity,
+          rate: line.originalUnitPrice,
+          netsuiteItemId: match.item?.internalId || null,
+          netsuiteLocationId: line.fulfillmentLocation?.netsuiteLocationId || workflowArguments.defaultLocationID || null,
+          shopifyFulfillmentLocation: line.fulfillmentLocation || null,
+        };
+      });
+
+      if (missingSkus.length || duplicateNetSuiteSkus.length) {
+        return buildStopPlan(
+          'item_matching_failed',
+          [
+            missingSkus.length ? `Missing NetSuite SKUs: ${missingSkus.join(', ')}` : null,
+            duplicateNetSuiteSkus.length ? `Duplicate NetSuite SKUs: ${duplicateNetSuiteSkus.join(', ')}` : null,
+          ].filter(Boolean).join('; ')
+        );
+      }
+
+      const discountAmount = roundMoney(shopifyOrder.discountAmount || 0);
+
+      return [{
+        workflowName: shopifyOrder.workflowName,
+        alertRecipients: shopifyOrder.alertRecipients,
+        action: 'apply_edit',
+        canApply: true,
+        shouldAlert: false,
+        eventType: 'edit',
+        shopifyOrder: {
+          id: shopifyOrder.id,
+          numericId: shopifyOrder.numericId,
+          name: shopifyOrder.name,
+          updatedAt: shopifyOrder.updatedAt,
+          orderEdit: shopifyOrder.orderEdit,
+        },
+        netsuite: {
+          salesOrder,
+          lines: netsuiteLookup.lines || [],
+        },
+        edit: {
+          shippingAddress: shopifyOrder.shippingAddress,
+          billingAddress: shopifyOrder.billingAddress,
+          customer: shopifyOrder.customer,
+          email: shopifyOrder.email,
+          phone: shopifyOrder.phone,
+          targetLines,
+          discountAmount,
+          discountItemId: workflowArguments.discountID || null,
+          discountPercentFieldId: 'custbody_shopify_disc_pct',
+          defaultLocationId: workflowArguments.defaultLocationID || null,
+          memoNote: `Shopify edit synced for ${shopifyOrder.name} at ${new Date().toISOString()}`,
+        },
+      }];
+  - stepNumber: 9
+    name: If/Else - If - Plan Can Apply
+    results: 1
+    type: conditional
+    condition: "[Step 8: input[0].canApply] = true"
+    branches:
+      "false":
+        - stepNumber: 14
+          name: Map - Map - Build Alert Email (Skip Path)
+          input: Step 8, Step 10, Step 12
+          results: 1
+          type: map
+          code: |
+            const plan = input['mapAX8Y']?.[0] || {};
+            const applyResult = input['netsuiteExecuteCustomCodePOSP']?.[0] || null;
+            const alert = input['map7XA0']?.[0] || {};
+
+            const failed = applyResult && applyResult.success === false;
+            const shouldWrite = failed || !!plan.shouldAlert;
+
+            return [{
+              shouldWrite,
+              key: `big_country_order_update_failure_${plan.shopifyOrder?.name || plan.shopifyOrder?.numericId || 'unknown'}_${Date.now()}`,
+              value: {
+                workflowName: plan.workflowName || 'Shopify to NetSuite - Sync Order Updates (Big Country)',
+                createdAt: new Date().toISOString(),
+                reason: failed ? 'netsuite_update_failed' : plan.reason,
+                detail: failed ? applyResult.message : plan.detail,
+                eventType: plan.eventType,
+                shopifyOrder: plan.shopifyOrder || null,
+                netsuiteSalesOrder: plan.netsuite?.salesOrder || null,
+                applyResult,
+                alertSubject: alert.subject || null,
+              },
+            }];
+      "true":
+        - stepNumber: 10
+          name: Netsuite - NetSuite - Apply Sales Order Update
+          results: 1
+          type: action
+        - stepNumber: 11
+          name: If/Else - If - NetSuite Apply Failed
+          results: 1
+          type: conditional
+          condition: "[Step 10: input[0].success] = false"
+          branches:
+            "false":
+              - stepNumber: 13
+                name: Flow Control - Flow Control - Log Success
+                type: action
+                args:
+                  - label: Action
+                    value: endAsSuccess
+                  - label: Emit Log
+                    value: Yes
+                  - label: Log Type
+                    value: info
+                  - label: Log Message
+                    value: "[NetSuite] Synced Shopify order update to NetSuite Sales Order."
+            "true":
+              - stepNumber: 12
+                name: Map - Map - Build Alert Email (Failure Path)
+                input: Step 8, Step 10
+                type: map
+                code: |
+                  const plan = input['mapAX8Y']?.[0] || {};
+                  const applyResult = input['netsuiteExecuteCustomCodePOSP']?.[0] || null;
+
+                  const shopifyOrder = plan.shopifyOrder || {};
+                  const salesOrder = plan.netsuite?.salesOrder || {};
+                  const failed = applyResult && applyResult.success === false;
+
+                  const subject = failed
+                    ? 'Shopify to NetSuite - Sync Order Updates (Big Country) - NetSuite Update Failed'
+                    : 'Shopify to NetSuite - Sync Order Updates (Big Country) - Manual Review Required';
+
+                  const body = [
+                    'Hello,',
+                    '',
+                    'This is an automated notification from Gravity.',
+                    '',
+                    'WORKFLOW',
+                    plan.workflowName || 'Shopify to NetSuite - Sync Order Updates (Big Country)',
+                    '',
+                    'SHOPIFY',
+                    `Order Name: ${shopifyOrder.name || '(unknown)'}`,
+                    `Order ID: ${shopifyOrder.numericId || shopifyOrder.id || '(unknown)'}`,
+                    `Event Type: ${plan.eventType || '(unknown)'}`,
+                    '',
+                    'NETSUITE',
+                    `Sales Order Internal ID: ${salesOrder.internalId || applyResult?.salesOrderId || '(unknown)'}`,
+                    `Sales Order Tran ID: ${salesOrder.tranid || '(unknown)'}`,
+                    `Status: ${salesOrder.orderStatusText || salesOrder.statusText || salesOrder.orderStatus || '(unknown)'}`,
+                    '',
+                    'DETAILS',
+                    failed
+                      ? `NetSuite update failed: ${applyResult.message || '(no message returned)'}`
+                      : `Reason: ${plan.reason || '(no reason returned)'}`,
+                    plan.detail ? `Detail: ${plan.detail}` : null,
+                    applyResult?.stack ? `Stack: ${applyResult.stack}` : null,
+                    '',
+                    'NEXT STEPS',
+                    'Review the Shopify order, NetSuite Sales Order, and Gravity run logs before replaying or manually applying the change.',
+                    '',
+                    'This is an automated message. Please do not reply to this email.',
+                  ].filter(line => line !== null && line !== undefined).join('\n');
+
+                  return [{
+                    shouldSend: !!plan.shouldAlert || failed,
+                    to: plan.alertRecipients || 'bruno@mindcloud.co,AMiller@lionel.com,jjones@lionel.com',
+                    subject,
+                    body,
+                    reason: failed ? 'netsuite_update_failed' : plan.reason,
+                    shopifyOrderName: shopifyOrder.name || null,
+                    salesOrderInternalId: salesOrder.internalId || applyResult?.salesOrderId || null,
+                  }];
+  - stepNumber: 15
+    name: New Step
+    type: action

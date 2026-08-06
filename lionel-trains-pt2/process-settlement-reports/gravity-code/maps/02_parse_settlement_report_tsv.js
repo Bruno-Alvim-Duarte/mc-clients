@@ -311,6 +311,50 @@ function firstNonEmpty(rows, fieldId) {
   return row ? normalizeText(row[fieldId]) : "";
 }
 
+function parseAmazonDate(value) {
+  const text = normalizeText(value);
+  if (!text) return null;
+
+  const dayFirstMatch = text.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}):(\d{2})(?:\s+UTC)?)?$/);
+  if (dayFirstMatch) {
+    const day = Number(dayFirstMatch[1]);
+    const month = Number(dayFirstMatch[2]);
+    const year = Number(dayFirstMatch[3]);
+    const hour = Number(dayFirstMatch[4] || 0);
+    const minute = Number(dayFirstMatch[5] || 0);
+    const second = Number(dayFirstMatch[6] || 0);
+    const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const yearFirstMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|\s+UTC)?)?$/);
+  if (yearFirstMatch) {
+    const year = Number(yearFirstMatch[1]);
+    const month = Number(yearFirstMatch[2]);
+    const day = Number(yearFirstMatch[3]);
+    const hour = Number(yearFirstMatch[4] || 0);
+    const minute = Number(yearFirstMatch[5] || 0);
+    const second = Number(yearFirstMatch[6] || 0);
+    const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const normalized = text
+    .replace(" UTC", "Z")
+    .replace(" ", "T");
+  const parsed = new Date(normalized);
+
+  if (!Number.isNaN(parsed.getTime())) return parsed;
+
+  const fallback = new Date(text);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function toDateOnly(value) {
+  const parsed = parseAmazonDate(value);
+  return parsed ? parsed.toISOString().split("T")[0] : normalizeText(value).split(" ")[0];
+}
+
 const rows = parseTsv(getResponseBody(httpResponse));
 const headerRows = rows.filter(isHeaderRow);
 
@@ -427,7 +471,7 @@ const settlement = {
   settlementStartDate: normalizeText(header["settlement-start-date"]),
   settlementEndDate: normalizeText(header["settlement-end-date"]),
   depositDate: normalizeText(header["deposit-date"]),
-  tranDate: normalizeText(header["settlement-end-date"]).split(" ")[0],
+  tranDate: toDateOnly(header["settlement-end-date"]),
   currency: normalizeText(header.currency || "USD") || "USD",
   marketplaceName: firstNonEmpty(detailRows, "marketplace-name"),
   totalAmount: headerTotal,

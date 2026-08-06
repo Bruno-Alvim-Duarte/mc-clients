@@ -18,16 +18,17 @@ Important:
 
 Business behavior:
 - Webhook source: Shopify.
-- Supported topics: orders/edited now; orders/cancelled later.
+- Supported topics: orders/edited and orders/cancelled.
 - For edit events, fetch the full Shopify order using Shopify GraphQL Beta before NetSuite lookup.
-- For cancellation events later, the webhook body should be enough to normalize the order and close NetSuite Sales Order lines.
+- For cancellation events, the webhook body should be enough to normalize the order and set the NetSuite Sales Order status to Cancelled.
 - Only process Shopify orders with the Exported tag.
 - Find NetSuite Sales Order by Shopify order name in NetSuite field custbody_shopify_ord_id.
 - Only update NetSuite Sales Orders in Pending Approval or Pending Fulfillment.
 - Stop and alert for Cancelled, Partially Fulfilled, Pending Billing / Partially Fulfilled, Billed / Fully Fulfilled, Closed, or unknown status.
 - Missing or duplicate SKU matches should alert and skip.
-- Edits should update shipping address, item quantities, item rates, item locations, added lines, removed lines by closing the line, and discount line/discount percent.
-- Do not update shipping cost, shipping method, taxes, refunds, Shopify tags, notes, or custom attributes.
+- Edits should update shipping address, item quantities, item rates, item locations, added lines, removed lines by removing the NetSuite line, and discount line/discount percent.
+- Carry Shopify edit notes from order_edit.staff_note and order_edit.discounts.line_item additions/removals description as notesToCarry with destinationFieldId = TO_BE_DEFINED. Do not write these notes to NetSuite until the destination field is defined.
+- Do not update shipping cost, shipping method, taxes, refunds, Shopify tags, or custom attributes.
 - Do not write back to Shopify.
 - On NetSuite update failure, write a memory entry, send an email, and stop.
 
@@ -42,19 +43,26 @@ Create the following steps in this exact order.
 
 1. Shopify Webhook Trigger
 - Type: webhook trigger
-- Topics: orders/edited. If possible, also allow orders/cancelled but keep cancellation path documented as future/testing later.
+- Topics: orders/edited and orders/cancelled.
 
 2. Map - Normalize Webhook
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 01-map-normalize-webhook.js here" }];
-- Purpose: normalize webhook topic, Shopify order ID/GID, order name when available, event type, and alert recipients.
+- Purpose: normalize webhook topic, Shopify order ID/GID, order name when available, event type, edit notes, and alert recipients.
 
 3. If - Event Is Edit
 - Type: if/else
 - Condition should evaluate Step 2 output isEdit equals true.
 - True branch: continue to Step 4.
-- False branch: route to Step 6 later for cancellation. If Gravity requires a branch now, create it but label it future cancellation testing.
+- False branch: continue to Step 3A.
+
+3A. If - Event Is Cancellation
+- Type: if/else
+- Condition should evaluate Step 2 output isCancellation equals true.
+- True branch: continue to Step 6.
+- False branch: log unsupported webhook topic and end the workflow as success.
+- This replaces the current Future - Cancellation Path / Not Yet Enabled branch.
 
 4. Map - Build Shopify Full Order Query
 - Type: map
@@ -84,7 +92,7 @@ Create the following steps in this exact order.
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 03-map-normalize-shopify-order.js here" }];
-- Purpose: normalize the full Shopify order for edit events or the webhook body for cancellation events later.
+- Purpose: normalize the full Shopify order for edit events or the webhook body for cancellation events, and carry edit notes forward.
 
 7. NetSuite - Execute Custom Code - Find Sales Order And Items
 - Type: NetSuite app action
@@ -107,7 +115,7 @@ Create the following steps in this exact order.
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 05-map-build-update-plan.js here" }];
-- Purpose: apply business rules and decide whether to apply edit, apply cancellation later, skip, alert, or stop.
+- Purpose: apply business rules and decide whether to apply edit, apply cancellation, skip, alert, or stop. Carry edit notes in edit.notesToCarry[] with destinationFieldId = TO_BE_DEFINED.
 
 9. If - Plan Can Apply
 - Type: if/else
@@ -123,8 +131,9 @@ Create the following steps in this exact order.
   function execute() { return { todo: "Paste code from 06-netsuite-apply-sales-order-update.js here" }; }
   execute();
 - Purpose:
-  - For edits: update shipping address, item quantities/rates/locations, added lines, removed lines by closing, and discount line/percent.
-  - For cancellation later: close all Sales Order item lines and append cancellation memo note.
+  - For edits: update shipping address, item quantities/rates/locations, added lines, removed lines by removing the NetSuite line, and discount line/percent.
+  - For edit notes: return notesToCarry in the NetSuite step result without writing them to NetSuite until the destination field is defined.
+  - For cancellation: set Sales Order orderstatus = C / Cancelled and append cancellation memo note.
 - Step Completion Option / Flow Control:
   - On failure: Stop Workflow
   - Log level: Error

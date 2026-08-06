@@ -47,6 +47,60 @@ function parseTags(value) {
     .filter(Boolean);
 }
 
+function addNote(notes, source, label, value, extra) {
+  const text = String(value || '').trim();
+  if (!text) return;
+
+  notes.push({
+    source,
+    label,
+    value: text,
+    destinationFieldId: 'TO_BE_DEFINED',
+    destinationFieldLabel: 'To be defined',
+    ...(extra || {}),
+  });
+}
+
+function moneyAmountSet(value) {
+  return (
+    value?.shop_money?.amount ||
+    value?.shopMoney?.amount ||
+    value?.presentment_money?.amount ||
+    value?.presentmentMoney?.amount ||
+    null
+  );
+}
+
+function collectOrderEditNotes(orderEditRecord) {
+  const notes = [];
+  addNote(notes, 'order_edit.staff_note', 'Order edit staff note', orderEditRecord.staff_note);
+
+  const lineItemDiscounts = orderEditRecord.discounts?.line_item || {};
+  const discountGroups = [
+    ['additions', lineItemDiscounts.additions],
+    ['removals', lineItemDiscounts.removals],
+  ];
+
+  discountGroups.forEach(([changeType, discounts]) => {
+    (Array.isArray(discounts) ? discounts : []).forEach((discount, index) => {
+      addNote(
+        notes,
+        `order_edit.discounts.line_item.${changeType}[${index}].description`,
+        `Line item discount ${changeType.slice(0, -1)} description`,
+        discount.description,
+        {
+          changeType,
+          lineItemId: discount.line_item_id || null,
+          fixedAmount: moneyAmountSet(discount.fixed_amount_set),
+          percentAmount: discount.percent_amount || null,
+        }
+      );
+    });
+  });
+
+  return notes;
+}
+
 const envelope = findWebhookEnvelope(input);
 const headers = envelope.headers || {};
 const body = envelope.body || {};
@@ -68,6 +122,7 @@ const orderGid =
 
 const isEdit = topic === 'orders/edited' || !!body.order_edit;
 const isCancellation = topic === 'orders/cancelled' || !!body.cancelled_at;
+const orderEditNotes = isEdit ? collectOrderEditNotes(orderEdit) : [];
 
 return [{
   workflowName: WORKFLOW_NAME,
@@ -100,6 +155,7 @@ return [{
     createdAt: orderEdit.created_at || null,
     committedAt: orderEdit.committed_at || null,
     staffNote: orderEdit.staff_note || '',
+    notes: orderEditNotes,
     notifyCustomer: !!orderEdit.notify_customer,
     lineItems: orderEdit.line_items || { additions: [], removals: [] },
     discounts: orderEdit.discounts || {},

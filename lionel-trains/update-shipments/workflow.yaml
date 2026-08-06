@@ -611,6 +611,7 @@ steps:
           
           try {
             const salesOrderId = ${ JSON.stringify(input.iterateQWTH?.[0].data.createdfrom) };
+            const NETSUITE_DEPARTMENT_ID = Number(${JSON.stringify(input.workflowArguments?.departmentID)}) || 34;
           
           
             const cashSaleRec = record.transform({
@@ -618,6 +619,12 @@ steps:
               fromId: salesOrderId,
               toType: record.Type.CASH_SALE,
               isDynamic: true
+            });
+
+            cashSaleRec.setValue({
+              fieldId: 'department',
+              value: NETSUITE_DEPARTMENT_ID,
+              ignoreFieldChange: true
             });
           
             const cashSaleId = cashSaleRec.save({

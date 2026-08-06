@@ -1,9 +1,11 @@
-const webhook = input['REPLACE_WITH_01_MAP_NORMALIZE_WEBHOOK_STEP_KEY']?.[0] || {};
-const graphqlResponse = input['REPLACE_WITH_SHOPIFY_GRAPHQL_BETA_STEP_KEY']?.[0] || {};
+const webhook = input['mapLR5J']?.[0] || {};
+const graphqlResponse = input['shopifyGraphqlBetaGJWP']?.[0] || {};
 const workflowArguments = input.workflowArguments || {};
 const NETSUITE_AMAZON_LOCATION_ID = 152;
 const SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES = {
   'gid://shopify/Location/72788476094': NETSUITE_AMAZON_LOCATION_ID,
+  'gid://shopify/Location/76447547458': 32,
+  'gid://shopify/Location/83979403454': 126,
 };
 
 function nodes(connectionOrArray) {
@@ -65,6 +67,10 @@ function getGraphqlOrder(response) {
 function getRestOrderFromWebhook(webhookRecord) {
   const body = webhookRecord.rawBody || {};
   if (body.order_edit) return null;
+
+  // Cancellation webhooks include the full REST order body here. Edit
+  // webhooks are deltas only, so edit events must use the Shopify GraphQL
+  // response instead.
   return body;
 }
 
@@ -90,6 +96,7 @@ function buildFulfillmentLocationByLineItem(order) {
         shopifyLocationName: location.name || '',
         netsuiteLocationId:
           SHOPIFY_LOCATION_TO_NETSUITE_LOCATION_OVERRIDES[shopifyLocationId] ||
+          workflowArguments.defaultLocationID ||
           workflowArguments.locationID ||
           null,
       };
@@ -167,5 +174,6 @@ return [{
   totalAmount: money(sourceOrder.currentTotalPriceSet || sourceOrder.current_total_price_set || sourceOrder.totalPriceSet || sourceOrder.total_price_set),
   shippingAmount: money(sourceOrder.totalShippingPriceSet || sourceOrder.total_shipping_price_set),
   orderEdit: webhook.orderEdit,
+  editNotes: webhook.orderEdit?.notes || [],
   rawCancellationBody: webhook.isCancellation ? webhook.rawBody : null,
 }];
