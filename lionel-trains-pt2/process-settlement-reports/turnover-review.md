@@ -26,7 +26,7 @@ The integration shape is clear: a daily scheduled Gravity workflow will poll Ama
 - Existing Journal Entry behavior: skip the settlement if a matching Journal Entry already exists
 - Processed-settlement state: do not store successful settlements in Gravity memory
 - Success source of truth: NetSuite lookup by settlement ID, preferably via `externalId` or a custom body field
-- Failure state: store unresolved failed settlement attempts in one Gravity memory or Key Value Storage array under key `amazon_settlement_failures` so a later run can retry with context
+- Failure state: store unresolved failed settlement attempts in one Gravity memory or Key Value Storage array under an environment-scoped key, `{camelCaseStoreName}_amazon_settlement_failures`, so a later run can retry with context without crossing workflow environments.
 - Journal Entry grouping: one Journal Entry per settlement ID
 - Journal Entry line granularity: category only
 - No settlement row should be ignored unless the client explicitly approves that behavior
@@ -221,7 +221,7 @@ Sample file:
 
 11. If the Journal Entry is created but CSV attachment fails, how should the workflow retry?
     Why it matters: This prevents created but incomplete records from being silently skipped.
-    Implementation impact: Do not mark successful settlements in memory. If attachment fails, save failure context in the shared `amazon_settlement_failures` array, including settlement ID, report ID, report document ID, failure phase, error message, and the NetSuite Journal Entry ID if one was created. On the next run, the workflow should detect the existing Journal Entry in NetSuite and, if there is an unresolved attachment failure array item for that settlement, retry only the CSV attachment instead of creating a new Journal Entry or skipping completely. After a successful retry, remove that settlement from the array and set the updated array back to `amazon_settlement_failures`.
+    Implementation impact: Do not mark successful settlements in memory. If attachment fails, save failure context in the environment-scoped failure array, including settlement ID, report ID, report document ID, failure phase, error message, and the NetSuite Journal Entry ID if one was created. On the next run, the workflow should detect the existing Journal Entry in NetSuite and, if there is an unresolved attachment failure array item for that settlement, retry only the CSV attachment instead of creating a new Journal Entry or skipping completely. After a successful retry, remove that settlement from the array and set the updated array back to the same environment-scoped key.
 
     A: Save to memory only on failure so the workflow can retry later. Do not save processed settlements in memory.
 
@@ -294,7 +294,7 @@ Sample file:
 - Do not save processed settlements in Gravity memory. Confirmed
 - Save failed settlement attempts in one Gravity memory or Key Value Storage array so they can be retried later. Confirmed
 - If CSV attachment fails after Journal Entry creation, store the created NetSuite Journal Entry ID with the failure context and retry attachment on a later run. Confirmed
-- After a successful retry, remove the settlement from the shared failure array and set the updated array. Confirmed
+- After a successful retry, remove the settlement from the environment-scoped failure array and set the updated array. Confirmed
 - Use NetSuite Execute Custom Code or SuiteScript for Journal Entry creation and CSV file attachment. Confirmed
 - Use `settlement-end-date` as the NetSuite posting date and Gravity checkpoint. Confirmed
 - Update the checkpoint after the full report page or batch succeeds. Confirmed

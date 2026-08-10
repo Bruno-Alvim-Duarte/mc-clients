@@ -9,20 +9,11 @@
 
 const runtimeConfig = (input.mapF0FK || [])[0] || {};
 const jePayload = (input.mapWLLK || [])[0] || {};
-const settlement =
-  (input.mapApplySettlementCurrencyConversion || [])[0] ||
-  (input.mapCurrencyConversion || [])[0] ||
-  (input.mapXTUO || [])[0] ||
-  {};
+const settlement = (input.mapXTUO || [])[0] || {};
 const createResult = (input.netsuiteExecuteCustomCodeYDBY || [])[0] || {};
 const attachResult = (input.netsuiteExecuteCustomCode29SZ || [])[0] || {};
 const existingFailureState =
-  (input.memoryGetFailureState || [])[0] ||
-  (input.keyValueGetFailureState || [])[0] ||
-  (input.getFailureState || [])[0] ||
-  (input.memoryKvGetFailureState || [])[0] ||
-  (input.getFailedSettlements || [])[0] ||
-  {};
+  (input.keyValueStorageK6FZ || [])[0] 
 
 const settlementId =
   jePayload.settlementId ||

@@ -14,7 +14,7 @@ const config = {
     //"jjones@lionel.com"
   ].join(", "),
   netsuite: {
-    subsidiaryId: "4",
+    subsidiaryId: "3",
     divisionFieldId: "csegdivision",
     divisionId: workflowArguments.divisionID,
     locationId: workflowArguments.locationID,
@@ -23,7 +23,6 @@ const config = {
     currencyByCode: {
       "USD": "1"
     },
-    journalEntryCurrencyCode: "USD",
     accountIds: {
       accountsReceivable: "123",
       cash: "1113", // DIFFERENT IN PRODUCTION ⚠️⚠️
@@ -33,7 +32,7 @@ const config = {
       refunds: "260",
     },
     // Sandbox File Cabinet folder. Replace via workflow argument or update here before production.
-    fileCabinetFolderId: Number(workflowArguments.amazonSettlementFileCabinetFolderId || 701790)
+    fileCabinetFolderId: Number(workflowArguments.amazonSettlementFileCabinetFolderId || 672659)
   },
   behavior: {
     allowCatchAllBySign: true,
@@ -41,19 +40,12 @@ const config = {
     failWhenTaxDoesNotNetToZero: true,
     moneyTolerance: 0.01,
     saveSuccessfulSettlementsInMemory: false,
-    saveFailedSettlementsInMemory: true,
-    currencyConversion: {
-      sourceCurrencyCodes: ["MXN"],
-      targetCurrencyCode: "USD",
-      financialEventGroupSearchPaddingDays: 3,
-      financialEventGroupDateMatchToleranceSeconds: 60,
-      financialEventGroupAmountTolerance: 0.01,
-      roundingAdjustmentTolerance: 0.05
-    }
+    saveFailedSettlementsInMemory: true
   },
   memory: {
-    failureListKey: "amazon_settlement_failures"
-  }
+    failureKeyPrefix: "amazon_settlement_failure_"
+  },
+  checkpoint: input.memory?.environment?.checkpoint
 };
 
 return [config];

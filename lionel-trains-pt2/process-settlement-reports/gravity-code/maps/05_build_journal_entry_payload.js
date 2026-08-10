@@ -80,7 +80,7 @@ function pickSettlementPayload() {
   );
 
   const namedCandidates = [
-    { key: "mapApplySettlementCurrencyConversion", value: firstFromStep(input.mapApplySettlementCurrencyConversion) },
+    { key: "mapApplySettlementCurrencyConversion", value: firstFromStep(input.mapL1JR) },
     { key: "mapCurrencyConversion", value: firstFromStep(input.mapCurrencyConversion) },
     { key: "mapXTUO", value: firstFromStep(input.mapXTUO) }
   ].filter(candidate => isSettlementLike(candidate.value));

@@ -12,7 +12,11 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
    - No local code file.
 
 2. **Map: Build Runtime Config**
-   - Centralizes recipients, cutoff date, NetSuite defaults, account IDs, File Cabinet folder, memory key prefix, and behavior flags.
+   - Centralizes recipients, cutoff date, NetSuite defaults, account IDs, File Cabinet folder, environment-scoped memory key, and behavior flags.
+   - Required workflow argument for KV isolation:
+     `amazonSettlementFailureStoreName` or `amazonSettlementKvStoreName`.
+   - The map converts that value to camelCase and exposes `memory.failureListKey` as:
+     `{camelCaseStoreName}_amazon_settlement_failures`.
    - Local code: `gravity-code/maps/00_build_runtime_config.js`
 
 3. **Amazon Seller: List Completed Settlement Reports**
@@ -23,13 +27,13 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
    - No local code file.
 
 4. **Memory/KV: Get Failed Settlements**
-   - Purpose: read the shared key `amazon_settlement_failures`.
+   - Purpose: read the environment-scoped key from `Build Runtime Config.memory.failureListKey`.
    - This must run before filtering so unresolved failed settlements can be merged back into the loop input.
    - If the key does not exist yet, continue with an empty array.
    - No local code file.
 
 5. **Map: Filter Completed Settlement Reports**
-   - Purpose: filter/sort Amazon reports after cutoff date, merge unresolved failed settlements from `amazon_settlement_failures`, dedupe, and expose `reports` for the loop.
+   - Purpose: filter/sort Amazon reports after cutoff date, merge unresolved failed settlements from the environment-scoped failure key, dedupe, and expose `reports` for the loop.
    - Reads runtime config from `Build Runtime Config`, Amazon list output, and the failed-settlements Memory/KV get output.
    - Local code: `gravity-code/maps/01_filter_completed_settlement_reports.js`
 
@@ -103,7 +107,7 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
     - Local code: `gravity-code/netsuite/01_search_existing_journal_entry.js`
 
 18. **Memory/KV: Get Failure State**
-    - Purpose: read the shared key `amazon_settlement_failures`.
+    - Purpose: read the environment-scoped key from `Build Runtime Config.memory.failureListKey`.
     - Needed so an existing Journal Entry can still go through CSV attachment retry if the previous run created the JE but failed attaching the file.
     - The value is an array. A pending attachment failure exists when one array item has the current `settlementId` and enough context to retry attachment.
     - No local code file.
@@ -136,12 +140,12 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
     - No local code file.
 
 24. **Map: Build Resolved Failure Memory Payload**
-    - Purpose: remove the current settlement from the shared failure array after a successful retry or successful full process.
-    - Reads the current `amazon_settlement_failures` array from the Memory/KV get step and returns the same key with a filtered array value.
+    - Purpose: remove the current settlement from the environment-scoped failure array after a successful retry or successful full process.
+    - Reads the current environment-scoped failure array from the Memory/KV get step and returns the same key with a filtered array value.
     - Local code: `gravity-code/maps/07_build_resolved_failure_memory_payload.js`
 
 25. **Memory/KV: Save Updated Failure Array**
-    - Key: `amazon_settlement_failures`
+    - Key: output `key` from `Build Resolved Failure Memory Payload`.
     - Value: output `value` from `Build Resolved Failure Memory Payload`.
     - No local code file.
 
@@ -154,14 +158,14 @@ This is the idealized Gravity step order. Only map and NetSuite Execute Custom C
 Use this branch from any loop-level failure point that should skip only the current settlement and continue with the next report.
 
 27. **Memory/KV: Get Current Failure Array**
-    - Key: `amazon_settlement_failures`
+    - Key: `Build Runtime Config.memory.failureListKey`
     - Run immediately before building the failure payload so this branch does not overwrite failures added earlier in the same workflow run.
     - If the key does not exist, continue with an empty array.
     - No local code file.
 
 28. **Map: Build Failure Memory Payload**
     - Purpose: add or replace the current settlement in the shared retryable failure array.
-    - Reads the current `amazon_settlement_failures` array from `Get Current Failure Array` and returns the same key with the updated array value.
+    - Reads the current environment-scoped failure array from `Get Current Failure Array` and returns the same key with the updated array value.
     - Set or provide `failurePhase` according to the failed stage, for example:
       - `parse_report`
       - `currency_conversion`
@@ -173,7 +177,7 @@ Use this branch from any loop-level failure point that should skip only the curr
     - Local code: `gravity-code/maps/06_build_failure_memory_payload.js`
 
 29. **Memory/KV: Save Failure State**
-    - Key: `amazon_settlement_failures`
+    - Key: output `key` from `Build Failure Memory Payload`.
     - Value: output `value` from `Build Failure Memory Payload`
     - No local code file.
 

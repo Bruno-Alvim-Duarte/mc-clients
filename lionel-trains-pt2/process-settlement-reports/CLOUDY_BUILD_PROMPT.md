@@ -190,7 +190,11 @@ Do not save successful settlements in Gravity memory.
 
 Only save failure state in Gravity memory or Key Value Storage:
 
-- Key: `amazon_settlement_failures`
+- Key: environment-scoped runtime key from `Build Runtime Config.memory.failureListKey`.
+- Required workflow argument for the key prefix:
+  `amazonSettlementFailureStoreName` or `amazonSettlementKvStoreName`.
+- Key format:
+  `{camelCaseStoreName}_amazon_settlement_failures`.
 - Value: an array of unresolved failed settlement objects.
 - Each array item should include:
   - `status`
@@ -203,14 +207,14 @@ Only save failure state in Gravity memory or Key Value Storage:
   - `journalEntryId` if one exists
   - `tranId` if one exists
   - timestamp
-- Before saving a new failure, get the current `amazon_settlement_failures` array, remove any existing item for the same `settlementId`, append the latest failure item, then set the whole array back to the same key.
-- In the failure branch, run a fresh Memory/KV Get for `amazon_settlement_failures` immediately before `Build Failure Memory Payload`; do not rely only on the initial get from the start of the workflow, or failures added earlier in the same run can be overwritten.
+- Before saving a new failure, get the current environment-scoped failure array, remove any existing item for the same `settlementId`, append the latest failure item, then set the whole array back to the same key.
+- In the failure branch, run a fresh Memory/KV Get for `Build Runtime Config.memory.failureListKey` immediately before `Build Failure Memory Payload`; do not rely only on the initial get from the start of the workflow, or failures added earlier in the same run can be overwritten.
 
 If a Journal Entry was created but CSV attachment failed:
 
 - Store the failure state with the created NetSuite Journal Entry ID.
 - On a later run, detect the existing Journal Entry and retry only the CSV attachment.
-- After successful retry, get the current `amazon_settlement_failures` array, remove the current settlement from the array, then set the whole array back to the same key.
+- After successful retry, get the current environment-scoped failure array, remove the current settlement from the array, then set the whole array back to the same key.
 
 ## Logging And Failure Emails
 
@@ -279,14 +283,14 @@ Please create this workflow structure. Use clear step names close to the names b
    - region: America
 
 4. Memory/KV: `Get Failed Settlements`
-   - Get key `amazon_settlement_failures`.
+   - Get key from `Build Runtime Config.memory.failureListKey`.
    - If the key does not exist, continue with an empty array.
    - This step must happen before the filter map so failed settlements can be retried even if Amazon's current list does not include them.
 
 5. Map: `Filter Completed Settlement Reports`
    - Use code snippet: `01_filter_completed_settlement_reports.js`
    - Replace input step keys with the real runtime config and Amazon list step keys.
-   - Also replace the Memory/KV get step key for `amazon_settlement_failures`.
+   - Also replace the Memory/KV get step key for the environment-scoped failure array.
    - This map merges completed Amazon reports with unresolved failed settlements from the array and dedupes them.
    - Output array path for loop: `reports`
 
@@ -363,11 +367,11 @@ Inside the loop:
 20. Map: `Build Resolved Failure Memory Payload`
    - Use code snippet: `07_build_resolved_failure_memory_payload.js`
    - Use only if there was a prior failure array item to resolve.
-   - It returns the same shared key and a new array with the current settlement removed.
+   - It returns the same environment-scoped key and a new array with the current settlement removed.
    - Replace input step keys with the real runtime config, payload, create, and attach step keys.
 
 21. Memory/KV: `Save Updated Failure Array`
-   - Key: `amazon_settlement_failures`
+   - Key: output `key` from `Build Resolved Failure Memory Payload`
    - Value: the `value` array returned by `Build Resolved Failure Memory Payload`.
 
 22. Flow Control: `Log Settlement Success`

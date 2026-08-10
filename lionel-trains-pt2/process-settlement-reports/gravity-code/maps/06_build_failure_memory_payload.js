@@ -3,7 +3,7 @@
 // - input.mapBuildRuntimeConfig[0] or input.mapF0FK[0]
 // - optional Memory/KV get output for the shared failure array
 // - input.iterateSettlementReport[0] or input.iterateEV9J[0]
-// - optional input.mapApplySettlementCurrencyConversion[0], input.mapParseSettlementReportTsv[0], or input.mapXTUO[0]
+// - optional input.mapParseSettlementReportTsv[0] or input.mapXTUO[0]
 // - optional input.mapBuildJournalEntryPayload[0]
 // - optional input.netsuiteCreateJournalEntry[0]
 // - optional input.netsuiteAttachSettlementCsv[0]
@@ -12,22 +12,12 @@
 
 const runtimeConfig = (input.mapF0FK || input.mapBuildRuntimeConfig || [])[0] || {};
 const currentReport = (input.iterateEV9J || input.iterateSettlementReport || [])[0] || {};
-const settlement =
-  (input.mapApplySettlementCurrencyConversion || [])[0] ||
-  (input.mapCurrencyConversion || [])[0] ||
-  (input.mapXTUO || input.mapParseSettlementReportTsv || [])[0] ||
-  {};
+const settlement = (input.mapXTUO || input.mapParseSettlementReportTsv || [])[0] || {};
 const jePayload = (input.mapWLLK || [])[0] || {};
 const createResult = (input.netsuiteExecuteCustomCodeYDBY || [])[0] || {};
 const attachResult = (input.netsuiteExecuteCustomCode29SZ || [])[0] || {};
 const existingFailureState =
-  (input.memoryGetFailureState || [])[0] ||
-  (input.keyValueGetFailureState || [])[0] ||
-  (input.getFailureState || [])[0] ||
-  (input.memoryKvGetFailureState || [])[0] ||
-  (input.getFailedSettlements || [])[0] ||
-  {};
-
+  (input.keyValueStorageALAT?.value || [])
 const workflowArguments = input.workflowArguments || {};
 const failurePhase = workflowArguments.failurePhase || "unknown";
 const errorMessage =
@@ -80,9 +70,6 @@ const failureEntry = {
   reportId: settlement.reportId || jePayload.reportId || currentReport.reportId || null,
   reportDocumentId: settlement.reportDocumentId || jePayload.reportDocumentId || currentReport.reportDocumentId || null,
   externalId: settlement.externalId || jePayload.externalId || null,
-  currency: settlement.currency || jePayload.currency || null,
-  sourceCurrency: settlement.sourceCurrency || jePayload.sourceCurrency || null,
-  currencyConversion: settlement.currencyConversion || jePayload.currencyConversion || null,
   journalEntryId:
     createResult.journalEntryId ||
     createResult.id ||

@@ -15,7 +15,7 @@ const searchRequest =
   (input.mapFinancialEventGroupSearchRequest || [])[0] ||
   {};
 const listFinancialEventGroupsResult =
-  input.listFinancialEventGroups ||
+  input.amazonSellerListFinancialEventGroupsO2XZ?.[0] ||
   input.amazonListFinancialEventGroups ||
   input.amazonSellerListFinancialEventGroups ||
   input.amazonSellerFinancialEventGroups ||

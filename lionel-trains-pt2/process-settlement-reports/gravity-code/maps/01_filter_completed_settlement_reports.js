@@ -10,12 +10,7 @@
 const runtimeConfig = (input.mapF0FK || [])[0] || {};
 const listReportsResult = (input.amazonSellerNaNQ9QS || [])[0] || {};
 const existingFailureState =
-  (input.memoryGetFailureState || [])[0] ||
-  (input.keyValueGetFailureState || [])[0] ||
-  (input.getFailureState || [])[0] ||
-  (input.memoryKvGetFailureState || [])[0] ||
-  (input.getFailedSettlements || [])[0] ||
-  {};
+  (input.keyValueStorageGHHQ || [])[0]
 const workflowArguments = input.workflowArguments || {};
 
 const REPORT_TYPE = runtimeConfig.reportType || "GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2";
