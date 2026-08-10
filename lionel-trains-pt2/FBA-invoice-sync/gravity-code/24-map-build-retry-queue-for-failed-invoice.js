@@ -3,7 +3,8 @@ const invoiceResult = input['netsuiteExecuteCustomCodeDMG7']?.[0] || {};
 const amazonOrderId = String(invoiceResult.amazonOrderId || '').trim();
 
 const current = (() => {
-  const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+  const memory = input.memory?.environment || input.memory || {};
+  const value = memory['lionel_fba_invoice_retry_orders'];
   if (!value) return [];
   if (Array.isArray(value)) return value;
   try {

@@ -5,7 +5,8 @@ const previousCheckpoint = memoryState.checkpoint || {};
 
 // Read the retry queue from memory (updated during the loop by Steps 26/30)
 const retryQueue = (() => {
-  const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+  const memory = input.memory?.environment || input.memory || {};
+  const value = memory['lionel_fba_invoice_retry_orders'];
   if (!value) return [];
   if (Array.isArray(value)) return value;
   try {

@@ -312,67 +312,75 @@ Inside the loop:
    - Replace input step keys with the actual runtime config and parse map keys.
    - This builds a window around the parsed `settlement-end-date` for the Amazon Financial Event Group lookup.
 
-11. Amazon Seller: `List Financial Event Groups`
+11. If: `Settlement Requires Currency Conversion`
+   - Continue to `List Financial Event Groups` only when `requiresCurrencyConversion = true`.
+   - If `requiresCurrencyConversion = false`, skip the Amazon Financial Event Group action and continue toward Journal Entry payload creation using the parsed settlement output directly.
+
+12. Amazon Seller: `List Financial Event Groups`
    - Use the existing Gravity action that lists Financial Event Groups between two dates.
    - Input start/end date from `Build Financial Event Group Search Request`.
    - This action does not need a local code snippet.
+   - Run only in the `requiresCurrencyConversion = true` branch.
 
-12. Map: `Apply Settlement Currency Conversion`
+13. Map: `Apply Settlement Currency Conversion`
    - Use code snippet: `04_apply_settlement_currency_conversion.js`
    - Replace input step keys with the actual runtime config, parse map, search request map, and Financial Event Group action keys.
    - For MXN settlements, match the Financial Event Group whose `fundTransferDate` equals the settlement `settlement-end-date`.
    - Calculate Amazon's exchange rate as `convertedTotal.currencyAmount / originalTotal.currencyAmount` and convert the settlement totals to USD.
    - If more than one group matches by date, use `originalTotal.currencyCode` and `originalTotal.currencyAmount` to disambiguate.
+   - Run only in the `requiresCurrencyConversion = true` branch.
 
-13. If: `Settlement Is Createable`
-   - Continue only when currency conversion map output `canCreateJournalEntry = true`.
+14. If: `Settlement Is Createable`
+   - In the conversion branch, continue only when currency conversion map output `canCreateJournalEntry = true`.
+   - In the no-conversion branch, continue only when parse map output `canCreateJournalEntry = true`.
    - If false, build failure memory payload, save failure state, send/log failure, and continue loop.
 
-14. Map: `Build NetSuite Journal Entry Payload`
+15. Map: `Build NetSuite Journal Entry Payload`
    - Use code snippet: `05_build_journal_entry_payload.js`
-   - Replace input step keys with the real runtime config and currency conversion map keys.
+   - In the conversion branch, replace input step keys with the real runtime config and currency conversion map keys.
+   - In the no-conversion branch, replace input step keys with the real runtime config and parse map keys.
    - This step should not add a clearing/balancing account. Cash `1113` is the clearing line from the settlement header total.
    - If the Journal Entry does not balance, send the settlement to the failure branch and continue the loop.
 
-15. NetSuite Execute Custom Code: `Search Existing Journal Entry`
+16. NetSuite Execute Custom Code: `Search Existing Journal Entry`
    - Use code snippet: `01_search_existing_journal_entry.js`
    - Replace input step key with the real payload map key.
 
-16. If: `Existing Journal Entry Decision`
+17. If: `Existing Journal Entry Decision`
    - If multiple matches are found, save failure state, send/log failure, and continue loop.
    - If exactly one match exists and there is no pending attachment failure, log skip and continue loop.
    - If exactly one match exists and there is a pending attachment failure for this settlement, continue to attachment retry.
    - If no match exists, create the Journal Entry.
 
-17. NetSuite Execute Custom Code: `Create Journal Entry`
+18. NetSuite Execute Custom Code: `Create Journal Entry`
    - Use code snippet: `02_create_journal_entry.js`
    - Replace input step key with the real payload map key.
 
-18. NetSuite Execute Custom Code: `Attach Settlement CSV`
+19. NetSuite Execute Custom Code: `Attach Settlement CSV`
    - Use code snippet: `03_attach_settlement_csv.js`
    - Replace input step keys with the real runtime config, payload, create/search, and HTTP download step keys.
 
-19. Map: `Build Resolved Failure Memory Payload`
+20. Map: `Build Resolved Failure Memory Payload`
    - Use code snippet: `07_build_resolved_failure_memory_payload.js`
    - Use only if there was a prior failure array item to resolve.
    - It returns the same shared key and a new array with the current settlement removed.
    - Replace input step keys with the real runtime config, payload, create, and attach step keys.
 
-20. Memory/KV: `Save Updated Failure Array`
+21. Memory/KV: `Save Updated Failure Array`
    - Key: `amazon_settlement_failures`
    - Value: the `value` array returned by `Build Resolved Failure Memory Payload`.
 
-21. Flow Control: `Log Settlement Success`
+22. Flow Control: `Log Settlement Success`
    - Log created, skipped, or attachment retried.
 
 After the loop:
 
-22. Optional Memory: `Update Checkpoint`
+23. Optional Memory: `Update Checkpoint`
    - If implemented, update only after the full page/batch succeeds.
    - Do not use this as processed-settlement memory.
    - Do not let checkpointing prevent retrying failures saved in memory.
 
-23. Flow Control: `Log Batch Summary`
+24. Flow Control: `Log Batch Summary`
    - Include report count, processed count, skipped count, failure count if available.
 
 ## Code Snippets

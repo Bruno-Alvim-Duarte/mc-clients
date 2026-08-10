@@ -41,7 +41,7 @@ steps:
     results: 1
     type: map
     code: |-
-      const memory = input.memory || {};
+      const memory = input.memory?.environment || input.memory || {};
       const checkpointKey = 'lionel_fba_invoice_sync_checkpoint';
       const retryQueueKey = 'lionel_fba_invoice_retry_orders';
       const retryFetchedOrdersKey = 'lionel_fba_invoice_retry_fetched_orders';
@@ -189,7 +189,8 @@ steps:
           const raw = input['amazonSellerGetOrderGSDY'] || [];
 
           const existing = (() => {
-            const value = input.memory?.['lionel_fba_invoice_retry_fetched_orders'];
+            const memory = input.memory?.environment || input.memory || {};
+            const value = memory['lionel_fba_invoice_retry_fetched_orders'];
             if (!value) return [];
             if (Array.isArray(value)) return value;
             try {
@@ -678,7 +679,8 @@ steps:
                             const amazonOrderId = String(source.amazonOrderId || source.AmazonOrderId || '').trim();
 
                             const current = (() => {
-                              const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                              const memory = input.memory?.environment || input.memory || {};
+                              const value = memory['lionel_fba_invoice_retry_orders'];
                               if (!value) return [];
                               if (Array.isArray(value)) return value;
                               try {
@@ -821,7 +823,8 @@ steps:
                                   const amazonOrderId = String(invoiceResult.amazonOrderId || '').trim();
 
                                   const current = (() => {
-                                    const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                                    const memory = input.memory?.environment || input.memory || {};
+                                    const value = memory['lionel_fba_invoice_retry_orders'];
                                     if (!value) return [];
                                     if (Array.isArray(value)) return value;
                                     try {
@@ -888,7 +891,8 @@ steps:
                                   const amazonOrderId = String(order.amazonOrderId || order.AmazonOrderId || '').trim();
 
                                   const current = (() => {
-                                    const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+                                    const memory = input.memory?.environment || input.memory || {};
+                                    const value = memory['lionel_fba_invoice_retry_orders'];
                                     if (!value) return [];
                                     if (Array.isArray(value)) return value;
                                     try {
@@ -922,7 +926,8 @@ steps:
 
       // Read the retry queue from memory (updated during the loop by Steps 26/30)
       const retryQueue = (() => {
-        const value = input.memory?.['lionel_fba_invoice_retry_orders'];
+        const memory = input.memory?.environment || input.memory || {};
+        const value = memory['lionel_fba_invoice_retry_orders'];
         if (!value) return [];
         if (Array.isArray(value)) return value;
         try {

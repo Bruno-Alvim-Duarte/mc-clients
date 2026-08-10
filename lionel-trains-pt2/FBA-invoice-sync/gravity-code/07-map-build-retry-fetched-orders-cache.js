@@ -3,7 +3,8 @@ const retryRecord = input['iterateUR9J']?.[0] || {};
 const raw = input['amazonSellerGetOrderGSDY'] || [];
 
 const existing = (() => {
-  const value = input.memory?.['lionel_fba_invoice_retry_fetched_orders'];
+  const memory = input.memory?.environment || input.memory || {};
+  const value = memory['lionel_fba_invoice_retry_fetched_orders'];
   if (!value) return [];
   if (Array.isArray(value)) return value;
   try {

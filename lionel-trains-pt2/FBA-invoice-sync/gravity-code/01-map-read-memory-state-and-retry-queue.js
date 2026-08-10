@@ -1,4 +1,4 @@
-const memory = input.memory || {};
+const memory = input.memory?.environment || input.memory || {};
 const checkpointKey = 'lionel_fba_invoice_sync_checkpoint';
 const retryQueueKey = 'lionel_fba_invoice_retry_orders';
 const retryFetchedOrdersKey = 'lionel_fba_invoice_retry_fetched_orders';
