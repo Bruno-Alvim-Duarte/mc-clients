@@ -129,6 +129,7 @@ function execute() {
   try {
     const matched = [];
     const missingSkus = [];
+    const missingSkuDetails = [];
     const duplicateSkus = [];
     const inventoryShortages = [];
     const inventoryCheckErrors = [];
@@ -178,7 +179,17 @@ function execute() {
           requiresInventoryAvailability: shouldCheckInventory(results[0])
         });
       }
-      else if (results.length === 0) missingSkus.push(sku);
+      else if (results.length === 0) {
+        missingSkus.push(sku);
+        missingSkuDetails.push({
+          sku,
+          amazonOrderId: orderInfo.amazonOrderId,
+          amazonOrderItemId: line.amazonOrderItemId || '',
+          title: line.title || '',
+          asin: line.asin || '',
+          quantity: line.quantity || 0
+        });
+      }
       else duplicateSkus.push(sku);
     }
 
@@ -271,6 +282,7 @@ function execute() {
       amazonOrderId: orderInfo.amazonOrderId,
       matched,
       missingSkus,
+      missingSkuDetails,
       duplicateSkus,
       inventoryLocationId: locationId,
       inventoryShortages,

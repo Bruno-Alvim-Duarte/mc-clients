@@ -5,7 +5,7 @@ const wfArguments = input["workflowArguments"]
 
 return [{
   workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
-  recipients: 'bruno@mindcloud.co',
+  recipients: `bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com, ${wfArguments.storePersonEmail}`,
   region: 'North America',
   marketplaceScope: 'All marketplaces',
   orderStatus: 'Shipped',
@@ -17,6 +17,8 @@ return [{
   retryOrderIds: state.retryOrderIds || [],
   checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
   retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+  missingSkuBatchAlertKey: 'lionel_fba_invoice_missing_sku_batch_alert',
+  batchId: input.system?.nowIso || new Date().toISOString(),
   netsuite: {
     customerInternalId: wfArguments.customerID,
     customerName: '9561387706 Amazon Customer',

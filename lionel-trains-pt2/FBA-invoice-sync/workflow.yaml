@@ -2,37 +2,30 @@ workflow:
   name: Amazon FBA to NetSuite - FBA Invoice Sync
   id: AQIIbHK1mcx3
   version: draft
-  isActive: false
-  publishedOn: 2026-07-27T13:29:16.000Z
+  isActive: true
+  publishedOn: 2026-08-11T17:18:26.000Z
 triggers:
-  - name: Schedule - Schedule - Run every 30 minutes, daily
+  - name: Schedule - Run every 30 minutes, daily
     type: schedule
-    message: Schedule - Run every 30 minutes, daily
+    message: Run every 30 minutes, daily
     schedule:
       mode: interval
       days:
-        - type: select
-          label: Sunday
-          value: 0
-        - type: select
-          label: Monday
-          value: 1
-        - type: select
-          label: Tuesday
-          value: 2
-        - type: select
-          label: Wednesday
-          value: 3
-        - type: select
-          label: Thursday
-          value: 4
-        - type: select
-          label: Friday
-          value: 5
-        - type: select
-          label: Saturday
-          value: 6
-      dayNames: []
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+      dayNames:
+        - Sunday
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+        - Saturday
       intervalMs: 1800000
 steps:
   - stepNumber: 1
@@ -40,7 +33,7 @@ steps:
     input: No data imported
     results: 1
     type: map
-    code: |-
+    code: |
       const memory = input.memory?.environment || input.memory || {};
       const checkpointKey = 'lionel_fba_invoice_sync_checkpoint';
       const retryQueueKey = 'lionel_fba_invoice_retry_orders';
@@ -90,7 +83,7 @@ steps:
     input: Step 1
     results: 1
     type: map
-    code: |-
+    code: |
       const state = input['map3HMU']?.[0] || {};
       const checkpoint = state.checkpoint || {};
       const updatedAfter = checkpoint.lastUpdatedAfter || '2026-05-01T00:00:00';
@@ -110,6 +103,8 @@ steps:
         retryOrderIds: state.retryOrderIds || [],
         checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
         retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
+        missingSkuBatchAlertKey: 'lionel_fba_invoice_missing_sku_batch_alert',
+        batchId: input.system?.nowIso || new Date().toISOString(),
         netsuite: {
           customerInternalId: wfArguments.customerID,
           customerName: '9561387706 Amazon Customer',
@@ -140,7 +135,7 @@ steps:
   - stepNumber: 4
     name: Map - Map - Retry Orders To Fetch
     input: Step 2
-    results: 10
+    results: 416
     type: map
     code: |-
       const config = input['map9QOY']?.[0] || {};
@@ -166,12 +161,19 @@ steps:
         args:
           - label: Order Id
             value: "[Step 5: input[0].amazonOrderId]"
-  - stepNumber: 9
+  - stepNumber: 7
+    name: Group Results - Group - Group Retry FBA Orders by Order Id
+    results: 3
+    type: action
+    args:
+      - label: Flatten Results
+        value: Yes
+  - stepNumber: 8
     name: Map - Map - Merge and Deduplicate Amazon Orders
-    input: Step 1, Step 2, Step 3
-    results: 100
+    input: Step 1, Step 2, Step 3, Step 7
+    results: 53
     type: map
-    code: |-
+    code: |
       const config = input['map9QOY']?.[0] || {};
       const currentOrders = input['amazonSellerListOrdersKFHW'] || [];
       const groupedRetryOrderResults = input['groupResults4EHS'] || [];
@@ -317,23 +319,22 @@ steps:
         ) ||
         String(a.AmazonOrderId).localeCompare(String(b.AmazonOrderId))
       );
-  - stepNumber: 10
+  - stepNumber: 9
     name: Iterate - Iterate - Loop through Amazon FBA Orders
     type: loop
     loopTarget:
-      stepNumber: 9
+      stepNumber: 8
       name: Map - Map - Merge and Deduplicate Amazon Orders
     children:
-      - stepNumber: 11
+      - stepNumber: 10
         name: Amazon Seller - Amazon - Get Order Items
-        results: 1
         type: action
         args:
           - label: Order Id
-            value: "[Step 10: input[0].amazonOrderId]"
-      - stepNumber: 12
+            value: "[Step 9: input[0].amazonOrderId]"
+      - stepNumber: 11
         name: Map - Map - Normalize Amazon Order
-        input: Step 2, Step 10, Step 11
+        input: Step 2, Step 9, Step 10
         results: 1
         type: map
         code: |-
@@ -391,16 +392,16 @@ steps:
             validationErrors,
             hasRequiredData: validationErrors.length === 0
           }];
-      - stepNumber: 13
+      - stepNumber: 12
         name: If/Else - If/Else - Order Has Required Data
         results: 1
         type: conditional
-        condition: "[Step 12: input[0].hasRequiredData] = true"
+        condition: "[Step 11: input[0].hasRequiredData] = true"
         branches:
           "false":
-            - stepNumber: 32
+            - stepNumber: 34
               name: Map - Map - Build Invalid Order Alert
-              input: Step 2, Step 12
+              input: Step 2, Step 11
               results: 1
               type: map
               code: |-
@@ -412,7 +413,7 @@ steps:
                   subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Invalid order ${order.amazonOrderId || '(unknown)'}`,
                   body: `Amazon FBA order ${order.amazonOrderId || '(unknown)'} could not be normalized and was added to retry memory.\n\nReason(s):\n${(order.validationErrors || []).map(e => '- ' + e).join('\n')}\n\nNo NetSuite invoice was created.`
                 }];
-            - stepNumber: 33
+            - stepNumber: 35
               name: "Flow Control - Flow Control - Skip: Invalid Amazon Order"
               results: 1
               type: action
@@ -428,23 +429,23 @@ steps:
                 - label: Send Email
                   value: Yes
                 - label: Email To
-                  value: "[Step 32: input[0].to]"
+                  value: "[Step 34: input[0].to]"
                 - label: Email Subject
-                  value: "[Step 32: input[0].subject]"
+                  value: "[Step 34: input[0].subject]"
                 - label: Email Body
-                  value: "[Step 32: input[0].body]"
+                  value: "[Step 34: input[0].body]"
           "true":
-            - stepNumber: 14
+            - stepNumber: 13
               name: Netsuite - NetSuite - Find Existing Invoice
               type: action
-            - stepNumber: 15
+            - stepNumber: 14
               name: If/Else - If/Else - No Existing Invoice
               results: 1
               type: conditional
-              condition: "[Step 14: response[0].id] empty null"
+              condition: "[Step 13: response[0].id] empty null"
               branches:
                 "false":
-                  - stepNumber: 31
+                  - stepNumber: 33
                     name: "Flow Control - Flow Control - Skip: Existing Invoice"
                     type: action
                     args:
@@ -457,13 +458,13 @@ steps:
                       - label: Log Message
                         value: "[NetSuite] Found existing invoice "
                 "true":
-                  - stepNumber: 16
+                  - stepNumber: 15
                     name: Netsuite - NetSuite - Resolve Invoice Items by SKU
                     results: 1
                     type: action
-                  - stepNumber: 17
+                  - stepNumber: 16
                     name: Map - Map - Build NetSuite Invoice Payload
-                    input: Step 2, Step 12, Step 16
+                    input: Step 2, Step 11, Step 15
                     results: 1
                     type: map
                     code: |
@@ -590,6 +591,17 @@ steps:
                       );
 
                       const validationErrors = [];
+                      const missingSkuDetails = (resolved.missingSkuDetails || []).map(line => ({
+                        sku: String(line.sku || '').trim(),
+                        amazonOrderId: order.amazonOrderId,
+                        marketplaceId: order.marketplaceId || null,
+                        purchaseDate: order.purchaseDate || null,
+                        lastUpdateDate: order.lastUpdateDate || null,
+                        amazonOrderItemId: line.amazonOrderItemId || '',
+                        title: line.title || '',
+                        asin: line.asin || '',
+                        quantity: Number(line.quantity || 0) || 0
+                      })).filter(line => line.sku);
 
                       if (!resolved.hasAllItems) {
                         validationErrors.push(
@@ -621,9 +633,27 @@ steps:
                         validationErrors.push('No invoice item lines were created.');
                       }
 
+                      const hasMissingNetSuiteSkus = missingSkuDetails.length > 0;
+                      const hasDuplicateNetSuiteSkus = Boolean(resolved.duplicateSkus && resolved.duplicateSkus.length);
+                      const hasInventoryValidationErrors = Boolean(
+                        (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) ||
+                        (resolved.inventoryShortages && resolved.inventoryShortages.length)
+                      );
+                      const hasMissingChargeMappings = missingChargeMappings.length > 0;
+                      const missingOnlyNoItemLines = hasMissingNetSuiteSkus && !itemLines.length;
+                      const hasNonMissingSkuValidationErrors =
+                        hasDuplicateNetSuiteSkus ||
+                        hasInventoryValidationErrors ||
+                        hasMissingChargeMappings ||
+                        (!itemLines.length && !missingOnlyNoItemLines);
+
                       return {
                         canCreate: validationErrors.length === 0,
                         validationErrors,
+                        hasMissingNetSuiteSkus,
+                        hasNonMissingSkuValidationErrors,
+                        shouldDeferMissingSkuEmail: hasMissingNetSuiteSkus && !hasNonMissingSkuValidationErrors,
+                        missingSkuDetails,
                         amazonOrderId: order.amazonOrderId,
                         externalId: order.amazonOrderId,
                         entity: config.netsuite.customerInternalId,
@@ -651,22 +681,23 @@ steps:
                         chargeLines,
                         totals,
                       };
-                  - stepNumber: 18
+                  - stepNumber: 17
                     name: If/Else - If/Else - Invoice Payload Can Be Created
                     results: 1
                     type: conditional
-                    condition: "[Step 17: input[0].canCreate] = true"
+                    condition: "[Step 16: input[0].canCreate] = true"
                     branches:
                       "false":
-                        - stepNumber: 27
+                        - stepNumber: 26
                           name: Map - Map - Build Mismatch Alert
-                          input: Step 2, Step 12, Step 17
+                          input: Step 2, Step 11, Step 16
                           results: 1
                           type: map
-                          code: |-
+                          code: |
                             const config = input['map9QOY']?.[0] || {};
                             const order = input['mapQC7W']?.[0] || {};
                             const payload = input['mapL4FH']?.[0] || {};
+                            const shouldDeferMissingSkuEmail = Boolean(payload.shouldDeferMissingSkuEmail);
 
                             const shortages = payload.inventoryShortages || [];
                             const inventoryDetails = shortages.length
@@ -692,15 +723,121 @@ steps:
 
                             return [{
                               to: config.recipients,
+                              sendEmail: shouldDeferMissingSkuEmail ? 'No' : 'Yes',
                               subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
                               body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}${inventoryDetails}${inventoryCheckErrors}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
                             }];
-                        - stepNumber: 28
-                          name: Map - Map - Build Retry Queue For Mismatch
-                          input: Step 2, Step 17
+                        - stepNumber: 27
+                          name: Map - Map - Accumulate Missing SKU Batch Alert
+                          input: Step 2, Step 16
                           results: 1
                           type: map
-                          code: |-
+                          code: |
+                            const config = input['map9QOY']?.[0] || {};
+                            const payload = input['mapL4FH']?.[0] || {};
+
+                            const key = config.missingSkuBatchAlertKey || 'lionel_fba_invoice_missing_sku_batch_alert';
+                            const batchId = config.batchId || config.updatedBefore || input.system?.nowIso || new Date().toISOString();
+                            const missingSkuDetails = payload.missingSkuDetails || [];
+
+                            function parseObject(value) {
+                              if (!value) return {};
+                              if (typeof value === 'string') {
+                                try {
+                                  const parsed = JSON.parse(value);
+                                  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+                                } catch (_) { return {}; }
+                              }
+                              return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+                            }
+
+                            const memory = input.memory?.environment || input.memory || {};
+                            const existing = parseObject(memory[key]);
+                            const batch = existing.batchId === batchId
+                              ? existing
+                              : {
+                                  batchId,
+                                  workflowName: config.workflowName || 'Amazon FBA to NetSuite - FBA Invoice Sync',
+                                  startedAt: input.system?.nowIso || new Date().toISOString(),
+                                  skus: {},
+                                  orderIds: []
+                                };
+
+                            if (!batch.skus || typeof batch.skus !== 'object' || Array.isArray(batch.skus)) {
+                              batch.skus = {};
+                            }
+
+                            if (!Array.isArray(batch.orderIds)) {
+                              batch.orderIds = [];
+                            }
+
+                            const seenOrderIds = new Set(batch.orderIds.map(id => String(id || '').trim()).filter(Boolean));
+
+                            for (const detail of missingSkuDetails) {
+                              const sku = String(detail.sku || '').trim();
+                              const amazonOrderId = String(detail.amazonOrderId || payload.amazonOrderId || '').trim();
+                              if (!sku || !amazonOrderId) continue;
+
+                              if (!batch.skus[sku]) {
+                                batch.skus[sku] = {
+                                  sku,
+                                  orders: []
+                                };
+                              }
+
+                              const orderKey = [
+                                amazonOrderId,
+                                detail.amazonOrderItemId || '',
+                                detail.quantity || 0
+                              ].join('|');
+
+                              const alreadyExists = batch.skus[sku].orders.some(order =>
+                                [
+                                  order.amazonOrderId,
+                                  order.amazonOrderItemId || '',
+                                  order.quantity || 0
+                                ].join('|') === orderKey
+                              );
+
+                              if (!alreadyExists) {
+                                batch.skus[sku].orders.push({
+                                  amazonOrderId,
+                                  amazonOrderItemId: detail.amazonOrderItemId || '',
+                                  title: detail.title || '',
+                                  asin: detail.asin || '',
+                                  quantity: Number(detail.quantity || 0) || 0,
+                                  marketplaceId: detail.marketplaceId || payload.marketplaceId || '',
+                                  purchaseDate: detail.purchaseDate || payload.originalAmazonPurchaseDate || '',
+                                  lastUpdateDate: detail.lastUpdateDate || ''
+                                });
+                              }
+
+                              if (!seenOrderIds.has(amazonOrderId)) {
+                                batch.orderIds.push(amazonOrderId);
+                                seenOrderIds.add(amazonOrderId);
+                              }
+                            }
+
+                            batch.updatedAt = input.system?.nowIso || new Date().toISOString();
+
+                            return [{
+                              key,
+                              value: batch,
+                              hasMissingSkuDetails: missingSkuDetails.length > 0
+                            }];
+                        - stepNumber: 28
+                          name: Memory - Memory - Set Missing SKU Batch Alert
+                          type: memory
+                          memory:
+                            - key: lionel_fba_invoice_missing_sku_batch_alert
+                              scope: environment
+                              savesOn: success
+                        - stepNumber: 29
+                          name: Map - Map - Build Retry Queue For Mismatch
+                          input: Step 2, Step 16
+                          results: 1
+                          type: map
+                          code: |
                             const config = input['map9QOY']?.[0] || {};
                             const source = input['mapL4FH']?.[0] || {};
                             const amazonOrderId = String(source.amazonOrderId || source.AmazonOrderId || '').trim();
@@ -732,46 +869,53 @@ steps:
                               key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
                               value: withoutCurrent
                             }];
-                        - stepNumber: 29
+                        - stepNumber: 30
                           name: Memory - Memory - Set Retry Queue For Mismatch
                           type: memory
                           memory:
                             - key: lionel_fba_invoice_retry_orders
+                              scope: environment
                               savesOn: always
-                        - stepNumber: 30
-                          name: Flow Control - Flow Control - Email and Skip Mismatch
-                          type: action
-                          args:
-                            - label: Action
-                              value: doNothing
-                            - label: Email To
-                              value: "[Step 27: input[0].to]"
-                            - label: Emit Log
-                              value: Yes
-                            - label: Log Type
-                              value: warning
-                            - label: Email Body
-                              value: "[Step 27: input[0].body]"
-                            - label: Send Email
-                              value: Yes
-                            - label: Log Message
-                              value: "[NetSuite] Skipped Amazon FBA order "
-                            - label: Email Subject
-                              value: "[Step 27: input[0].subject]"
+                        - stepNumber: 31
+                          name: If/Else - If Should Send Email
+                          type: conditional
+                          condition: "[Step 26: input[0].sendEmail] = Yes"
+                          branches:
+                            "true":
+                              - stepNumber: 32
+                                name: Flow Control - Flow Control - Email and Skip Mismatch
+                                type: action
+                                args:
+                                  - label: Action
+                                    value: doNothing
+                                  - label: Email To
+                                    value: "[Step 26: input[0].to]"
+                                  - label: Emit Log
+                                    value: Yes
+                                  - label: Log Type
+                                    value: warning
+                                  - label: Email Body
+                                    value: "[Step 26: input[0].body]"
+                                  - label: Send Email
+                                    value: Yes
+                                  - label: Log Message
+                                    value: "[NetSuite] Skipped Amazon FBA order "
+                                  - label: Email Subject
+                                    value: "[Step 26: input[0].subject]"
                       "true":
-                        - stepNumber: 19
+                        - stepNumber: 18
                           name: Netsuite - NetSuite - Create Invoice
                           results: 1
                           type: action
-                        - stepNumber: 20
+                        - stepNumber: 19
                           name: If/Else - If Success = true
                           type: conditional
-                          condition: "[Step 19: input[0].success] = true"
+                          condition: "[Step 18: input[0].success] = true"
                           branches:
                             "false":
-                              - stepNumber: 23
+                              - stepNumber: 22
                                 name: Map - Map - Build Failed Invoice Alert
-                                input: Step 2, Step 12, Step 19
+                                input: Step 2, Step 11, Step 18
                                 results: 1
                                 type: map
                                 code: |-
@@ -836,15 +980,15 @@ steps:
 
                                   return [{
                                     to: config.recipients,
-                                    subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Failed to create invoice for order ${order.amazonOrderId}`,
+                                    subject: `[${input.workflowArguments.storeName}] Amazon FBA to NetSuite - FBA Invoice Sync - Failed to create invoice for order ${order.amazonOrderId}`,
                                     body: bodyParts.join('\n'),
                                   }];
-                              - stepNumber: 24
+                              - stepNumber: 23
                                 name: Map - Map - Build Retry Queue For Failed Invoice
-                                input: Step 2, Step 19
+                                input: Step 2, Step 18
                                 results: 1
                                 type: map
-                                code: |-
+                                code: |
                                   const config = input['map9QOY']?.[0] || {};
                                   const invoiceResult = input['netsuiteExecuteCustomCodeDMG7']?.[0] || {};
                                   const amazonOrderId = String(invoiceResult.amazonOrderId || '').trim();
@@ -880,39 +1024,40 @@ steps:
                                     key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
                                     value: withoutCurrent
                                   }];
-                              - stepNumber: 25
+                              - stepNumber: 24
                                 name: Memory - Memory - Set Retry Queue For Failed Invoice
                                 type: memory
                                 memory:
                                   - key: lionel_fba_invoice_retry_orders
+                                    scope: environment
                                     savesOn: always
-                              - stepNumber: 26
+                              - stepNumber: 25
                                 name: Flow Control - Flow Control - Email and Skip Failed Invoice
                                 type: action
                                 args:
                                   - label: Action
                                     value: doNothing
                                   - label: Email To
-                                    value: "[Step 23: input[0].to]"
+                                    value: "[Step 22: input[0].to]"
                                   - label: Emit Log
                                     value: Yes
                                   - label: Log Type
                                     value: warning
                                   - label: Email Body
-                                    value: "[Step 23: input[0].body]"
+                                    value: "[Step 22: input[0].body]"
                                   - label: Send Email
                                     value: Yes
                                   - label: Log Message
                                     value: "[NetSuite] Failed to create invoice for Amazon FBA order "
                                   - label: Email Subject
-                                    value: "[Step 23: input[0].subject]"
+                                    value: "[Step 22: input[0].subject]"
                             "true":
-                              - stepNumber: 21
+                              - stepNumber: 20
                                 name: Map - Map - Build Retry Queue Without Created Invoice
-                                input: Step 2, Step 17
+                                input: Step 2, Step 16
                                 results: 1
                                 type: map
-                                code: |-
+                                code: |
                                   const config = input['map9QOY']?.[0] || {};
                                   const order = input['mapL4FH']?.[0] || {};
                                   const amazonOrderId = String(order.amazonOrderId || order.AmazonOrderId || '').trim();
@@ -934,18 +1079,23 @@ steps:
                                       String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
                                     )
                                   }];
-                              - stepNumber: 22
+                              - stepNumber: 21
                                 name: Memory - Memory - Set Retry Queue After Created Invoice
                                 type: memory
                                 memory:
                                   - key: lionel_fba_invoice_retry_orders
+                                    scope: environment
                                     savesOn: always
-  - stepNumber: 34
+      - stepNumber: 36
+        name: Wait - Wait for 1 second
+        type: wait
+        durationMs: 0
+  - stepNumber: 37
     name: Map - Map - Build Next Checkpoint
-    input: Step 2, Step 9, Step 1
+    input: Step 2, Step 8, Step 1
     results: 1
     type: map
-    code: |-
+    code: |
       const config = input['map9QOY']?.[0] || {};
       const orders = input['map7D02'] || [];
       const memoryState = input['map3HMU']?.[0] || {};
@@ -1003,14 +1153,125 @@ steps:
           updatedAt: input.system?.nowIso || new Date().toISOString()
         }
       }];
-  - stepNumber: 35
+  - stepNumber: 38
     name: Memory - Memory - Set Checkpoint
     results: 3
     type: memory
     memory:
-      - key: key
+      - key: lionel_fba_invoice_sync_checkpoint
+        scope: environment
         savesOn: always
-  - stepNumber: 37
+  - stepNumber: 39
+    name: Map - Map - Build Missing SKU Batch Alert
+    input: Step 2
+    results: 1
+    type: map
+    code: |
+      const config = input['map9QOY']?.[0] || {};
+      const key = config.missingSkuBatchAlertKey || 'lionel_fba_invoice_missing_sku_batch_alert';
+      const batchId = config.batchId || config.updatedBefore || '';
+
+      function parseObject(value) {
+        if (!value) return {};
+        if (typeof value === 'string') {
+          try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+          } catch (_) { return {}; }
+        }
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      }
+
+      const memory = input.memory?.environment || input.memory || {};
+      const batch = parseObject(memory[key]);
+      const skus = batch.batchId === batchId && batch.skus && typeof batch.skus === 'object'
+        ? Object.values(batch.skus)
+        : [];
+
+      const sortedSkus = skus
+        .filter(record => record && record.sku && Array.isArray(record.orders) && record.orders.length)
+        .sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
+
+      const orderIds = Array.from(new Set(
+        sortedSkus.flatMap(record =>
+          record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
+        )
+      )).sort();
+
+      const bodyParts = [
+        'Amazon FBA orders were skipped because their SKUs were not found as active NetSuite items.',
+        '',
+        `Missing SKU count: ${sortedSkus.length}`,
+        `Affected order count: ${orderIds.length}`,
+        '',
+        'Missing SKU details:'
+      ];
+
+      for (const record of sortedSkus) {
+        bodyParts.push('', `SKU: ${record.sku}`);
+
+        const orders = record.orders.slice().sort((a, b) =>
+          String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
+        );
+
+        for (const order of orders) {
+          bodyParts.push(
+            [
+              `- Order: ${order.amazonOrderId || '(unknown)'}`,
+              `Qty: ${order.quantity || 0}`,
+              `Amazon Order Item ID: ${order.amazonOrderItemId || '(blank)'}`,
+              `ASIN: ${order.asin || '(blank)'}`,
+              `Purchase Date: ${order.purchaseDate || '(blank)'}`,
+              `Title: ${order.title || '(blank)'}`
+            ].join(' | ')
+          );
+        }
+      }
+
+      bodyParts.push(
+        '',
+        'No NetSuite invoices were created for these orders. The orders remain in retry memory and will be retried after the missing NetSuite items are created or the Amazon SKU mapping is corrected.'
+      );
+
+      return [{
+        key,
+        resetValue: {},
+        hasMissingSkuAlerts: sortedSkus.length > 0,
+        sendEmail: sortedSkus.length > 0 ? 'Yes' : 'No',
+        to: config.recipients,
+        subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
+        body: bodyParts.join('\n')
+      }];
+  - stepNumber: 40
+    name: If/Else - If Has Missing Sku Alerts = true
+    type: conditional
+    condition: "[Step 39: input[0].hasMissingSkuAlerts] = true"
+    branches:
+      "true":
+        - stepNumber: 41
+          name: Flow Control -  Flow Control - Email Missing SKU Batch Alert
+          type: action
+          args:
+            - label: Action
+              value: doNothing
+            - label: Log Type
+              value: info
+            - label: Send Email
+              value: Yes
+            - label: Email To
+              value: "[Step 39: input[0].to]"
+            - label: Email Subject
+              value: "[Step 39: input[0].subject]"
+            - label: Email Body
+              value: "[Step 39: input[0].body]"
+  - stepNumber: 42
+    name: Memory - Memory - Reset Missing SKU Batch Alert
+    type: memory
+    memory:
+      - key: lionel_fba_invoice_missing_sku_batch_alert
+        scope: environment
+        savesOn: success
+  - stepNumber: 43
     name: Flow Control - Flow Control - Log Batch Complete
     type: action
     args:

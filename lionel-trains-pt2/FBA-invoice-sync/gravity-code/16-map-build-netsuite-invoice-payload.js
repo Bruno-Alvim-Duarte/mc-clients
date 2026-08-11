@@ -121,6 +121,17 @@ addCharge(
 );
 
 const validationErrors = [];
+const missingSkuDetails = (resolved.missingSkuDetails || []).map(line => ({
+  sku: String(line.sku || '').trim(),
+  amazonOrderId: order.amazonOrderId,
+  marketplaceId: order.marketplaceId || null,
+  purchaseDate: order.purchaseDate || null,
+  lastUpdateDate: order.lastUpdateDate || null,
+  amazonOrderItemId: line.amazonOrderItemId || '',
+  title: line.title || '',
+  asin: line.asin || '',
+  quantity: Number(line.quantity || 0) || 0
+})).filter(line => line.sku);
 
 if (!resolved.hasAllItems) {
   validationErrors.push(
@@ -152,9 +163,27 @@ if (!itemLines.length) {
   validationErrors.push('No invoice item lines were created.');
 }
 
+const hasMissingNetSuiteSkus = missingSkuDetails.length > 0;
+const hasDuplicateNetSuiteSkus = Boolean(resolved.duplicateSkus && resolved.duplicateSkus.length);
+const hasInventoryValidationErrors = Boolean(
+  (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) ||
+  (resolved.inventoryShortages && resolved.inventoryShortages.length)
+);
+const hasMissingChargeMappings = missingChargeMappings.length > 0;
+const missingOnlyNoItemLines = hasMissingNetSuiteSkus && !itemLines.length;
+const hasNonMissingSkuValidationErrors =
+  hasDuplicateNetSuiteSkus ||
+  hasInventoryValidationErrors ||
+  hasMissingChargeMappings ||
+  (!itemLines.length && !missingOnlyNoItemLines);
+
 return {
   canCreate: validationErrors.length === 0,
   validationErrors,
+  hasMissingNetSuiteSkus,
+  hasNonMissingSkuValidationErrors,
+  shouldDeferMissingSkuEmail: hasMissingNetSuiteSkus && !hasNonMissingSkuValidationErrors,
+  missingSkuDetails,
   amazonOrderId: order.amazonOrderId,
   externalId: order.amazonOrderId,
   entity: config.netsuite.customerInternalId,

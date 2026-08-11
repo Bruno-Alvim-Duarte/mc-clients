@@ -59,6 +59,6 @@ bodyParts.push(
 
 return [{
   to: config.recipients,
-  subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Failed to create invoice for order ${order.amazonOrderId}`,
+  subject: `[${input.workflowArguments.storeName}] Amazon FBA to NetSuite - FBA Invoice Sync - Failed to create invoice for order ${order.amazonOrderId}`,
   body: bodyParts.join('\n'),
 }];
