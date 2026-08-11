@@ -1,7 +1,6 @@
 const memory = input.memory?.environment || input.memory || {};
 const checkpointKey = 'lionel_fba_invoice_sync_checkpoint';
 const retryQueueKey = 'lionel_fba_invoice_retry_orders';
-const retryFetchedOrdersKey = 'lionel_fba_invoice_retry_fetched_orders';
 
 function parseArray(value) {
   if (!value) return [];
@@ -34,22 +33,12 @@ const retryOrders = parseArray(memory[retryQueueKey])
   }))
   .filter(record => record.amazonOrderId);
 
-const retryFetchedOrders = parseArray(memory[retryFetchedOrdersKey])
-  .map(order => ({
-    ...order,
-    AmazonOrderId: String(order.AmazonOrderId || order.amazonOrderId || order.id || '').trim(),
-    isRetry: true
-  }))
-  .filter(order => order.AmazonOrderId);
-
 return [{
   checkpoint,
   retryOrders,
-  retryFetchedOrders,
   retryOrderIds: Array.from(new Set(retryOrders.map(r => r.amazonOrderId))),
   keys: {
     checkpointKey,
-    retryQueueKey,
-    retryFetchedOrdersKey
+    retryQueueKey
   }
 }];

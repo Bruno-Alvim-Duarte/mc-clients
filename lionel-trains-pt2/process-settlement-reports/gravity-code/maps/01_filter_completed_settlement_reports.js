@@ -2,7 +2,7 @@
 // Expected input:
 // - input.mapBuildRuntimeConfig[0] from "Build Runtime Config"
 // - input.amazonListFbmReports[0] from Amazon Seller "List FBM Reports"
-// - optional Memory/KV get output for key amazon_settlement_failures
+// - optional Memory/KV get output for runtimeConfig.memory.failureListKey
 // - optional input.workflowArguments for overrides
 //
 // Replace mapBuildRuntimeConfig and amazonListFbmReports with actual Gravity step keys.
@@ -147,6 +147,7 @@ const reports = Object.keys(reportsByKey)
 
 return [{
   reportType: REPORT_TYPE,
+  failureListKey: runtimeConfig.memory && runtimeConfig.memory.failureListKey || null,
   cutoffDate: cutoffDate.toISOString(),
   reportCount: reports.length,
   amazonReportCount: amazonReports.length,

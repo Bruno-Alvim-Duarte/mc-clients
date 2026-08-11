@@ -1,8 +1,8 @@
-// Gravity map step: Remove a resolved settlement from the shared failure array.
+// Gravity map step: Remove a resolved settlement from the environment-scoped failure array.
 //
 // Expected input:
 // - input.mapBuildRuntimeConfig[0] or input.mapF0FK[0]
-// - Memory/KV get output for the shared failure array
+// - Memory/KV get output for the environment-scoped failure array
 // - input.mapBuildJournalEntryPayload[0]
 // - optional input.netsuiteCreateJournalEntry[0]
 // - optional input.netsuiteAttachSettlementCsv[0]
@@ -56,7 +56,15 @@ function extractFailureArray(memoryResult) {
   return [];
 }
 
-const key = (runtimeConfig.memory && runtimeConfig.memory.failureListKey) || "amazon_settlement_failures";
+function getFailureListKey(config) {
+  const key = config.memory && config.memory.failureListKey;
+  if (!key) {
+    throw new Error("Missing runtimeConfig.memory.failureListKey while building resolved failure memory payload");
+  }
+  return key;
+}
+
+const key = getFailureListKey(runtimeConfig);
 const existingFailures = extractFailureArray(existingFailureState);
 const value = existingFailures.filter(item => String(item.settlementId || "") !== String(settlementId));
 

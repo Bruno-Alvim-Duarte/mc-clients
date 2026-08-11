@@ -4,6 +4,56 @@
 
 const workflowArguments = input.workflowArguments || {};
 
+function normalizeText(value) {
+  return String(value || "").trim();
+}
+
+function toCamelCase(value) {
+  const words = normalizeText(value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean);
+
+  return words
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      return index === 0 ? lower : lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join("");
+}
+
+const rawFailureStoreName =
+  workflowArguments.amazonSettlementFailureStoreName ||
+  workflowArguments.amazonSettlementKvStoreName ||
+  workflowArguments.failureStoreName ||
+  workflowArguments.kvStoreName ||
+  workflowArguments.storeName ||
+  workflowArguments.environmentStoreName ||
+  workflowArguments.environmentName ||
+  workflowArguments.environment ||
+  input.amazonSettlementFailureStoreName ||
+  input.kvStoreName ||
+  input.storeName ||
+  input.environmentStoreName ||
+  input.environmentName ||
+  input.environment ||
+  input.memory?.environment?.amazonSettlementFailureStoreName ||
+  input.memory?.environment?.kvStoreName ||
+  input.memory?.environment?.storeName ||
+  input.memory?.environment?.name ||
+  input.memory?.environment?.id;
+const failureStoreName = toCamelCase(rawFailureStoreName);
+
+if (!failureStoreName) {
+  throw new Error(
+    "Missing environment-specific KV store name for Amazon settlement failures. " +
+    "Pass workflowArguments.amazonSettlementFailureStoreName, amazonSettlementKvStoreName, storeName, or environmentName."
+  );
+}
+
+const failureListBaseKey = "amazon_settlement_failures";
+const failureListKey = `${failureStoreName}_${failureListBaseKey}`;
+
 const config = {
   workflowName: "Amazon Settlement Reports to NetSuite Journal Entries",
   reportType: "GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2",
@@ -43,7 +93,10 @@ const config = {
     saveFailedSettlementsInMemory: true
   },
   memory: {
-    failureKeyPrefix: "amazon_settlement_failure_"
+    failureKeyPrefix: "amazon_settlement_failure_",
+    failureStoreName,
+    failureListBaseKey,
+    failureListKey
   },
   checkpoint: input.memory?.environment?.checkpoint
 };

@@ -17,7 +17,6 @@ return [{
   retryOrderIds: state.retryOrderIds || [],
   checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
   retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
-  retryFetchedOrdersKey: state.keys?.retryFetchedOrdersKey || 'lionel_fba_invoice_retry_fetched_orders',
   netsuite: {
     customerInternalId: wfArguments.customerID,
     customerName: '9561387706 Amazon Customer',

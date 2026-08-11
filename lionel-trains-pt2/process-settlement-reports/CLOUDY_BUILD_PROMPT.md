@@ -273,7 +273,7 @@ Please create this workflow structure. Use clear step names close to the names b
 
 2. Map: `Build Runtime Config`
    - Use code snippet: `00_build_runtime_config.js`
-   - This is the shared source for recipients, cutoff date, NetSuite defaults, account IDs, File Cabinet folder, memory key prefix, and behavior flags.
+   - This is the shared source for recipients, cutoff date, NetSuite defaults, account IDs, File Cabinet folder, environment-scoped failure memory key, and behavior flags.
    - Later snippets should read this output through `input.mapBuildRuntimeConfig[0]`; replace `mapBuildRuntimeConfig` with the actual generated step key.
 
 3. Amazon Seller: `List Completed Settlement Reports`

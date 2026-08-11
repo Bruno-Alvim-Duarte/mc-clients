@@ -1,7 +1,7 @@
-// Gravity map step: Add or replace one retryable settlement failure in the shared failure array.
+// Gravity map step: Add or replace one retryable settlement failure in the environment-scoped failure array.
 // Expected input:
 // - input.mapBuildRuntimeConfig[0] or input.mapF0FK[0]
-// - optional Memory/KV get output for the shared failure array
+// - optional Memory/KV get output for the environment-scoped failure array
 // - input.iterateSettlementReport[0] or input.iterateEV9J[0]
 // - optional input.mapParseSettlementReportTsv[0] or input.mapXTUO[0]
 // - optional input.mapBuildJournalEntryPayload[0]
@@ -58,8 +58,16 @@ function extractFailureArray(memoryResult) {
   return [];
 }
 
+function getFailureListKey(config) {
+  const key = config.memory && config.memory.failureListKey;
+  if (!key) {
+    throw new Error("Missing runtimeConfig.memory.failureListKey while building settlement failure payload");
+  }
+  return key;
+}
+
 const settlementId = settlement.settlementId || jePayload.settlementId || currentReport.settlementId || currentReport.reportId || "unknown";
-const key = (runtimeConfig.memory && runtimeConfig.memory.failureListKey) || "amazon_settlement_failures";
+const key = getFailureListKey(runtimeConfig);
 const existingFailures = extractFailureArray(existingFailureState);
 const failureEntry = {
   workflowName: runtimeConfig.workflowName || "Amazon Settlement Reports to NetSuite Journal Entries",
