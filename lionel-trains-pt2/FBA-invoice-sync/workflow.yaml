@@ -833,49 +833,21 @@ steps:
                               scope: environment
                               savesOn: success
                         - stepNumber: 29
-                          name: Map - Map - Build Retry Queue For Mismatch
+                          name: Map - Map - Build Retry Queue Update For Mismatch
                           input: Step 2, Step 16
                           results: 1
                           type: map
                           code: |
-                            const config = input['map9QOY']?.[0] || {};
                             const source = input['mapL4FH']?.[0] || {};
                             const amazonOrderId = String(source.amazonOrderId || source.AmazonOrderId || '').trim();
 
-                            const current = (() => {
-                              const memory = input.memory?.environment || input.memory || {};
-                              const value = memory['lionel_fba_invoice_retry_orders'];
-                              if (!value) return [];
-                              if (Array.isArray(value)) return value;
-                              try {
-                                const parsed = JSON.parse(value);
-                                return Array.isArray(parsed) ? parsed : [];
-                              } catch (_) { return []; }
-                            })();
-
-                            const withoutCurrent = current.filter(record =>
-                              String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
-                            );
-
-                            if (amazonOrderId) {
-                              withoutCurrent.push({
-                                amazonOrderId,
-                                reason: source.validationErrors || [],
-                                lastAttemptAt: input.system?.nowIso || new Date().toISOString()
-                              });
-                            }
-
                             return [{
-                              key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
-                              value: withoutCurrent
+                              retryQueueUpdateType: 'add',
+                              source: 'mismatch',
+                              amazonOrderId,
+                              reason: amazonOrderId ? (source.validationErrors || []) : [],
+                              lastAttemptAt: input.system?.nowIso || new Date().toISOString()
                             }];
-                        - stepNumber: 30
-                          name: Memory - Memory - Set Retry Queue For Mismatch
-                          type: memory
-                          memory:
-                            - key: lionel_fba_invoice_retry_orders
-                              scope: environment
-                              savesOn: always
                         - stepNumber: 31
                           name: If/Else - If Should Send Email
                           type: conditional
@@ -984,53 +956,24 @@ steps:
                                     body: bodyParts.join('\n'),
                                   }];
                               - stepNumber: 23
-                                name: Map - Map - Build Retry Queue For Failed Invoice
+                                name: Map - Map - Build Retry Queue Update For Failed Invoice
                                 input: Step 2, Step 18
                                 results: 1
                                 type: map
                                 code: |
-                                  const config = input['map9QOY']?.[0] || {};
                                   const invoiceResult = input['netsuiteExecuteCustomCodeDMG7']?.[0] || {};
                                   const amazonOrderId = String(invoiceResult.amazonOrderId || '').trim();
-
-                                  const current = (() => {
-                                    const memory = input.memory?.environment || input.memory || {};
-                                    const value = memory['lionel_fba_invoice_retry_orders'];
-                                    if (!value) return [];
-                                    if (Array.isArray(value)) return value;
-                                    try {
-                                      const parsed = JSON.parse(value);
-                                      return Array.isArray(parsed) ? parsed : [];
-                                    } catch (_) { return []; }
-                                  })();
-
-                                  const withoutCurrent = current.filter(record =>
-                                    String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
-                                  );
-
-                                  if (amazonOrderId) {
-                                    const errorDetails = invoiceResult?.error?.message
-                                      || invoiceResult?.error?.code
-                                      || 'Invoice creation failed';
-
-                                    withoutCurrent.push({
-                                      amazonOrderId,
-                                      reason: [`NetSuite invoice creation failed: ${errorDetails}`],
-                                      lastAttemptAt: input.system?.nowIso || new Date().toISOString()
-                                    });
-                                  }
+                                  const errorDetails = invoiceResult?.error?.message
+                                    || invoiceResult?.error?.code
+                                    || 'Invoice creation failed';
 
                                   return [{
-                                    key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
-                                    value: withoutCurrent
+                                    retryQueueUpdateType: 'add',
+                                    source: 'failed_invoice',
+                                    amazonOrderId,
+                                    reason: amazonOrderId ? [`NetSuite invoice creation failed: ${errorDetails}`] : [],
+                                    lastAttemptAt: input.system?.nowIso || new Date().toISOString()
                                   }];
-                              - stepNumber: 24
-                                name: Memory - Memory - Set Retry Queue For Failed Invoice
-                                type: memory
-                                memory:
-                                  - key: lionel_fba_invoice_retry_orders
-                                    scope: environment
-                                    savesOn: always
                               - stepNumber: 25
                                 name: Flow Control - Flow Control - Email and Skip Failed Invoice
                                 type: action
@@ -1053,44 +996,143 @@ steps:
                                     value: "[Step 22: input[0].subject]"
                             "true":
                               - stepNumber: 20
-                                name: Map - Map - Build Retry Queue Without Created Invoice
+                                name: Map - Map - Build Retry Queue Remove Update For Created Invoice
                                 input: Step 2, Step 16
                                 results: 1
                                 type: map
                                 code: |
-                                  const config = input['map9QOY']?.[0] || {};
                                   const order = input['mapL4FH']?.[0] || {};
                                   const amazonOrderId = String(order.amazonOrderId || order.AmazonOrderId || '').trim();
 
-                                  const current = (() => {
-                                    const memory = input.memory?.environment || input.memory || {};
-                                    const value = memory['lionel_fba_invoice_retry_orders'];
-                                    if (!value) return [];
-                                    if (Array.isArray(value)) return value;
-                                    try {
-                                      const parsed = JSON.parse(value);
-                                      return Array.isArray(parsed) ? parsed : [];
-                                    } catch (_) { return []; }
-                                  })();
-
                                   return [{
-                                    key: config.retryQueueKey || 'lionel_fba_invoice_retry_orders',
-                                    value: current.filter(record =>
-                                      String(record.amazonOrderId || record.orderId || '').trim() !== amazonOrderId
-                                    )
+                                    retryQueueUpdateType: 'remove',
+                                    source: 'created_invoice',
+                                    amazonOrderId,
+                                    lastAttemptAt: input.system?.nowIso || new Date().toISOString()
                                   }];
-                              - stepNumber: 21
-                                name: Memory - Memory - Set Retry Queue After Created Invoice
-                                type: memory
-                                memory:
-                                  - key: lionel_fba_invoice_retry_orders
-                                    scope: environment
-                                    savesOn: always
       - stepNumber: 36
         name: Wait - Wait for 1 second
         type: wait
         durationMs: 0
   - stepNumber: 37
+    name: Group Results - Group - Group Retry Queue Updates
+    results: 3
+    type: action
+    args:
+      - label: Flatten Results
+        value: Yes
+  - stepNumber: 38
+    name: Map - Map - Build Retry Queue From Batch Updates
+    input: Step 2, Step 37
+    results: 1
+    type: map
+    code: |
+      const config = input['map9QOY']?.[0] || {};
+      const groupedRetryQueueUpdates = input['groupResultsJBQV'] || [];
+
+      function parseArray(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (_) { return []; }
+        }
+        return [];
+      }
+
+      function retryOrderId(record) {
+        return String(record?.amazonOrderId || record?.orderId || record?.AmazonOrderId || '').trim();
+      }
+
+      function collectRetryUpdates(value, collected = []) {
+        if (!value) return collected;
+
+        if (typeof value === 'string') {
+          collectRetryUpdates(parseArray(value), collected);
+          return collected;
+        }
+
+        if (Array.isArray(value)) {
+          for (const item of value) collectRetryUpdates(item, collected);
+          return collected;
+        }
+
+        if (typeof value !== 'object') return collected;
+
+        if (value.retryQueueUpdateType && retryOrderId(value)) {
+          collected.push(value);
+          return collected;
+        }
+
+        for (const nested of Object.values(value)) {
+          collectRetryUpdates(nested, collected);
+        }
+
+        return collected;
+      }
+
+      const key = config.retryQueueKey || 'lionel_fba_invoice_retry_orders';
+      const memory = input.memory?.environment || input.memory || {};
+      const current = parseArray(memory[key]);
+      const byOrderId = new Map();
+
+      for (const record of current) {
+        const amazonOrderId = retryOrderId(record);
+        if (!amazonOrderId) continue;
+
+        byOrderId.set(amazonOrderId, {
+          ...record,
+          amazonOrderId
+        });
+      }
+
+      const updates = collectRetryUpdates(groupedRetryQueueUpdates);
+      const latestUpdateByOrderId = new Map();
+
+      for (const update of updates) {
+        const amazonOrderId = retryOrderId(update);
+        if (!amazonOrderId) continue;
+
+        latestUpdateByOrderId.set(amazonOrderId, {
+          ...update,
+          amazonOrderId
+        });
+      }
+
+      for (const update of latestUpdateByOrderId.values()) {
+        if (update.retryQueueUpdateType === 'remove') {
+          byOrderId.delete(update.amazonOrderId);
+          continue;
+        }
+
+        if (update.retryQueueUpdateType === 'add') {
+          byOrderId.delete(update.amazonOrderId);
+          byOrderId.set(update.amazonOrderId, {
+            amazonOrderId: update.amazonOrderId,
+            reason: Array.isArray(update.reason) ? update.reason : [String(update.reason || 'Retry requested')],
+            lastAttemptAt: update.lastAttemptAt || input.system?.nowIso || new Date().toISOString(),
+            retrySource: update.source || 'batch_update'
+          });
+        }
+      }
+
+      return [{
+        key,
+        value: Array.from(byOrderId.values()),
+        updateCount: updates.length,
+        uniqueUpdatedOrderCount: latestUpdateByOrderId.size
+      }];
+  - stepNumber: 39
+    name: Memory - Memory - Set Retry Queue From Batch Updates
+    results: 3
+    type: memory
+    memory:
+      - key: lionel_fba_invoice_retry_orders
+        scope: environment
+        savesOn: always
+  - stepNumber: 40
     name: Map - Map - Build Next Checkpoint
     input: Step 2, Step 8, Step 1
     results: 1
@@ -1127,9 +1169,9 @@ steps:
       // (i.e., orders that were successfully processed or skipped as existing)
       const nonRetryCount = batchOrderIds.filter(id => !retryOrderIds.has(id)).length;
 
-      // If no orders in the batch, or every batch order ended up in the retry queue,
-      // do NOT advance the checkpoint — preserve the previous one so the same window
-      // is re-processed on the next run.
+      // Keep allFailed as a diagnostic flag only. The checkpoint should still advance
+      // to the newest order in the batch so failed orders rely on retry memory instead
+      // of forcing the same Amazon update window to run again.
       const allFailed = batchOrderIds.length > 0 && nonRetryCount === 0;
 
       const dates = orders
@@ -1139,9 +1181,8 @@ steps:
 
       const nextCheckpoint = dates.length ? dates[dates.length - 1] : config.updatedAfter;
 
-      const effectiveCheckpoint = allFailed
-        ? (previousCheckpoint.lastUpdatedAfter || config.updatedAfter)
-        : nextCheckpoint;
+      const previousLastUpdatedAfter = previousCheckpoint.lastUpdatedAfter || config.updatedAfter;
+      const effectiveCheckpoint = nextCheckpoint;
 
       return [{
         key: config.checkpointKey,
@@ -1149,11 +1190,11 @@ steps:
           lastUpdatedAfter: effectiveCheckpoint,
           lastOrderCount: orders.length,
           allFailed,
-          advancedCheckpoint: !allFailed,
+          advancedCheckpoint: effectiveCheckpoint !== previousLastUpdatedAfter,
           updatedAt: input.system?.nowIso || new Date().toISOString()
         }
       }];
-  - stepNumber: 38
+  - stepNumber: 41
     name: Memory - Memory - Set Checkpoint
     results: 3
     type: memory
@@ -1161,7 +1202,7 @@ steps:
       - key: lionel_fba_invoice_sync_checkpoint
         scope: environment
         savesOn: always
-  - stepNumber: 39
+  - stepNumber: 42
     name: Map - Map - Build Missing SKU Batch Alert
     input: Step 2
     results: 1
@@ -1242,13 +1283,13 @@ steps:
         subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
         body: bodyParts.join('\n')
       }];
-  - stepNumber: 40
+  - stepNumber: 43
     name: If/Else - If Has Missing Sku Alerts = true
     type: conditional
-    condition: "[Step 39: input[0].hasMissingSkuAlerts] = true"
+    condition: "[Step 42: input[0].hasMissingSkuAlerts] = true"
     branches:
       "true":
-        - stepNumber: 41
+        - stepNumber: 44
           name: Flow Control -  Flow Control - Email Missing SKU Batch Alert
           type: action
           args:
@@ -1259,19 +1300,19 @@ steps:
             - label: Send Email
               value: Yes
             - label: Email To
-              value: "[Step 39: input[0].to]"
+              value: "[Step 42: input[0].to]"
             - label: Email Subject
-              value: "[Step 39: input[0].subject]"
+              value: "[Step 42: input[0].subject]"
             - label: Email Body
-              value: "[Step 39: input[0].body]"
-  - stepNumber: 42
+              value: "[Step 42: input[0].body]"
+  - stepNumber: 45
     name: Memory - Memory - Reset Missing SKU Batch Alert
     type: memory
     memory:
       - key: lionel_fba_invoice_missing_sku_batch_alert
         scope: environment
         savesOn: success
-  - stepNumber: 43
+  - stepNumber: 46
     name: Flow Control - Flow Control - Log Batch Complete
     type: action
     args:

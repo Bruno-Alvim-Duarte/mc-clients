@@ -28,6 +28,6 @@ const inventoryCheckErrors = payload.inventoryCheckErrors && payload.inventoryCh
 return [{
   to: config.recipients,
   sendEmail: shouldDeferMissingSkuEmail ? 'No' : 'Yes',
-  subject: `[${input.workflowArguments.storeName}] Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
+  subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
   body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}${inventoryDetails}${inventoryCheckErrors}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
 }];

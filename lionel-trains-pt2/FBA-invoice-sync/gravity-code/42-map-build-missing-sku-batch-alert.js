@@ -70,6 +70,6 @@ return [{
   hasMissingSkuAlerts: sortedSkus.length > 0,
   sendEmail: sortedSkus.length > 0 ? 'Yes' : 'No',
   to: config.recipients,
-  subject: `[${input.workflowArguments.storeName}] Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
+  subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
   body: bodyParts.join('\n')
 }];

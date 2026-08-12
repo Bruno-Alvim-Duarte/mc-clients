@@ -5,7 +5,7 @@ const wfArguments = input["workflowArguments"]
 
 return [{
   workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
-  recipients: `bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com, ${wfArguments.storePersonEmail}`,
+  recipients: 'bruno@mindcloud.co',
   region: 'North America',
   marketplaceScope: 'All marketplaces',
   orderStatus: 'Shipped',

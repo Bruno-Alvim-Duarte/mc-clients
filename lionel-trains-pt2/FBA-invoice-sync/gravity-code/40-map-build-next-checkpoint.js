@@ -29,9 +29,9 @@ const batchOrderIds = orders.map(o =>
 // (i.e., orders that were successfully processed or skipped as existing)
 const nonRetryCount = batchOrderIds.filter(id => !retryOrderIds.has(id)).length;
 
-// If no orders in the batch, or every batch order ended up in the retry queue,
-// do NOT advance the checkpoint — preserve the previous one so the same window
-// is re-processed on the next run.
+// Keep allFailed as a diagnostic flag only. The checkpoint should still advance
+// to the newest order in the batch so failed orders rely on retry memory instead
+// of forcing the same Amazon update window to run again.
 const allFailed = batchOrderIds.length > 0 && nonRetryCount === 0;
 
 const dates = orders
@@ -41,9 +41,8 @@ const dates = orders
 
 const nextCheckpoint = dates.length ? dates[dates.length - 1] : config.updatedAfter;
 
-const effectiveCheckpoint = allFailed
-  ? (previousCheckpoint.lastUpdatedAfter || config.updatedAfter)
-  : nextCheckpoint;
+const previousLastUpdatedAfter = previousCheckpoint.lastUpdatedAfter || config.updatedAfter;
+const effectiveCheckpoint = nextCheckpoint;
 
 return [{
   key: config.checkpointKey,
@@ -51,7 +50,7 @@ return [{
     lastUpdatedAfter: effectiveCheckpoint,
     lastOrderCount: orders.length,
     allFailed,
-    advancedCheckpoint: !allFailed,
+    advancedCheckpoint: effectiveCheckpoint !== previousLastUpdatedAfter,
     updatedAt: input.system?.nowIso || new Date().toISOString()
   }
 }];
