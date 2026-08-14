@@ -55,8 +55,8 @@ function addNote(notes, source, label, value, extra) {
     source,
     label,
     value: text,
-    destinationFieldId: 'TO_BE_DEFINED',
-    destinationFieldLabel: 'To be defined',
+    destinationFieldId: 'item.description',
+    destinationFieldLabel: 'NetSuite item line description',
     ...(extra || {}),
   });
 }

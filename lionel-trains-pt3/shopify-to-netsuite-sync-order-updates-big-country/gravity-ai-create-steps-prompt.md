@@ -25,9 +25,12 @@ Business behavior:
 - Find NetSuite Sales Order by Shopify order name in NetSuite field custbody_shopify_ord_id.
 - Only update NetSuite Sales Orders in Pending Approval or Pending Fulfillment.
 - Stop and alert for Cancelled, Partially Fulfilled, Pending Billing / Partially Fulfilled, Billed / Fully Fulfilled, Closed, or unknown status.
-- Missing or duplicate SKU matches should alert and skip.
-- Edits should update shipping address, item quantities, item rates, item locations, added lines, removed lines by removing the NetSuite line, and discount line/discount percent.
-- Carry Shopify edit notes from order_edit.staff_note and order_edit.discounts.line_item additions/removals description as notesToCarry with destinationFieldId = TO_BE_DEFINED. Do not write these notes to NetSuite until the destination field is defined.
+- Missing or duplicate NetSuite SKU matches should alert and skip.
+- Duplicate Shopify lines with the same SKU should be merged when they can safely map to one NetSuite item line. Multiple cancelled duplicate Shopify lines with quantity 0 should collapse into one target line with quantity 0. Duplicate positive Shopify SKU lines should alert only if their positive rates or locations differ.
+- Edits should update shipping address, item quantities, item rates, item locations, added lines, cancelled lines by setting quantity to 0, and discount line/discount percent.
+- If Shopify keeps a cancelled line item with quantity 0, preserve the NetSuite item line with quantity 0 so the cancelled item remains visible.
+- Add Shopify line-item discount description notes to that NetSuite item line description using " - " as the separator. Preserve any existing description/notes already on the line and do not duplicate the same note.
+- Add Shopify order_edit.staff_note to the description only for NetSuite item lines referenced by the edit delta using " - " as the separator. Preserve existing description/notes and do not add it to older zero-quantity lines that merely appear in the full Shopify order.
 - Do not update shipping cost, shipping method, taxes, refunds, Shopify tags, or custom attributes.
 - Do not write back to Shopify.
 - On NetSuite update failure, write a memory entry, send an email, and stop.
@@ -115,7 +118,7 @@ Create the following steps in this exact order.
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 05-map-build-update-plan.js here" }];
-- Purpose: apply business rules and decide whether to apply edit, apply cancellation, skip, alert, or stop. Carry edit notes in edit.notesToCarry[] with destinationFieldId = TO_BE_DEFINED.
+- Purpose: apply business rules and decide whether to apply edit, apply cancellation, skip, alert, or stop. Include cancelled Shopify lines with quantity 0 in edit.targetLines[] and carry descriptionNotes[] per affected line.
 
 9. If - Plan Can Apply
 - Type: if/else
@@ -131,8 +134,8 @@ Create the following steps in this exact order.
   function execute() { return { todo: "Paste code from 06-netsuite-apply-sales-order-update.js here" }; }
   execute();
 - Purpose:
-  - For edits: update shipping address, item quantities/rates/locations, added lines, removed lines by removing the NetSuite line, and discount line/percent.
-  - For edit notes: return notesToCarry in the NetSuite step result without writing them to NetSuite until the destination field is defined.
+  - For edits: update shipping address, item quantities/rates/locations, added lines, cancelled lines with quantity 0, and discount line/percent.
+  - For edit notes: append target descriptionNotes[] into the affected item line description using " - " as the separator, preserving existing notes and avoiding duplicates.
   - For cancellation: set Sales Order orderstatus = C / Cancelled and append cancellation memo note.
 - Step Completion Option / Flow Control:
   - On failure: Stop Workflow

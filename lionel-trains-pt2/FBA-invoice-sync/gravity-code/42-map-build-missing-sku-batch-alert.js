@@ -18,58 +18,141 @@ const batch = parseObject(memory[key]);
 const skus = batch.batchId === batchId && batch.skus && typeof batch.skus === 'object'
   ? Object.values(batch.skus)
   : [];
+const inventoryShortages = batch.batchId === batchId && batch.inventoryShortages && typeof batch.inventoryShortages === 'object'
+  ? Object.values(batch.inventoryShortages)
+  : [];
 
 const sortedSkus = skus
   .filter(record => record && record.sku && Array.isArray(record.orders) && record.orders.length)
   .sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
+const sortedInventoryShortages = inventoryShortages
+  .filter(record => record && Array.isArray(record.orders) && record.orders.length)
+  .sort((a, b) =>
+    String(a.sku || a.netsuiteItemId || '').localeCompare(String(b.sku || b.netsuiteItemId || '')) ||
+    String(a.locationId || '').localeCompare(String(b.locationId || ''))
+  );
 
 const orderIds = Array.from(new Set(
-  sortedSkus.flatMap(record =>
-    record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
-  )
+  [
+    ...sortedSkus.flatMap(record =>
+      record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
+    ),
+    ...sortedInventoryShortages.flatMap(record =>
+      record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
+    )
+  ]
 )).sort();
 
 const bodyParts = [
-  'Amazon FBA orders were skipped because their SKUs were not found as active NetSuite items.',
+  'Amazon FBA orders were skipped because NetSuite validation failed before invoice creation.',
   '',
   `Missing SKU count: ${sortedSkus.length}`,
+  `Insufficient inventory item/location count: ${sortedInventoryShortages.length}`,
   `Affected order count: ${orderIds.length}`,
-  '',
-  'Missing SKU details:'
 ];
 
-for (const record of sortedSkus) {
-  bodyParts.push('', `SKU: ${record.sku}`);
+function formatSkuSearchAttempts(attempts) {
+  if (!Array.isArray(attempts) || !attempts.length) return '';
 
-  const orders = record.orders.slice().sort((a, b) =>
-    String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
-  );
+  return attempts
+    .map(attempt =>
+      `${attempt.strategy || 'search'}=${attempt.sku || '(blank)'} (${attempt.resultCount || 0})`
+    )
+    .join(', ');
+}
 
-  for (const order of orders) {
+if (sortedSkus.length) {
+  bodyParts.push('', 'Missing SKU details:');
+
+  for (const record of sortedSkus) {
+    bodyParts.push('', `SKU: ${record.sku}`);
+
+    const amazonSkus = Array.isArray(record.amazonSkus)
+      ? record.amazonSkus.filter(Boolean)
+      : [];
+
+    if (amazonSkus.length) {
+      bodyParts.push(`Amazon SKU(s): ${amazonSkus.join(', ')}`);
+    }
+
+    const orders = record.orders.slice().sort((a, b) =>
+      String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
+    );
+
+    for (const order of orders) {
+      const searchAttempts = formatSkuSearchAttempts(order.skuSearchAttempts);
+      bodyParts.push(
+        [
+          `- Order: ${order.amazonOrderId || '(unknown)'}`,
+          `Qty: ${order.quantity || 0}`,
+          `Amazon SKU: ${order.amazonSku || '(blank)'}`,
+          `NetSuite Search SKU: ${order.netsuiteSearchSku || record.sku || '(blank)'}`,
+          `Match Strategy: ${order.skuMatchStrategy || '(blank)'}`,
+          `Search Attempts: ${searchAttempts || '(blank)'}`,
+          `Amazon Order Item ID: ${order.amazonOrderItemId || '(blank)'}`,
+          `ASIN: ${order.asin || '(blank)'}`,
+          `Purchase Date: ${order.purchaseDate || '(blank)'}`,
+          `Title: ${order.title || '(blank)'}`
+        ].join(' | ')
+      );
+    }
+  }
+}
+
+if (sortedInventoryShortages.length) {
+  bodyParts.push('', 'Insufficient NetSuite inventory details:');
+
+  for (const record of sortedInventoryShortages) {
     bodyParts.push(
+      '',
       [
-        `- Order: ${order.amazonOrderId || '(unknown)'}`,
-        `Qty: ${order.quantity || 0}`,
-        `Amazon Order Item ID: ${order.amazonOrderItemId || '(blank)'}`,
-        `ASIN: ${order.asin || '(blank)'}`,
-        `Purchase Date: ${order.purchaseDate || '(blank)'}`,
-        `Title: ${order.title || '(blank)'}`
+        `SKU: ${record.sku || '(blank)'}`,
+        `Amazon SKU: ${record.amazonSku || '(blank)'}`,
+        `NetSuite Search SKU: ${record.netsuiteSearchSku || record.sku || '(blank)'}`,
+        `NetSuite Item ID: ${record.netsuiteItemId || '(blank)'}`,
+        `Location: ${record.locationId || '(blank)'}`,
+        `Item Name: ${record.netsuiteItemName || '(blank)'}`
       ].join(' | ')
     );
+
+    const orders = record.orders.slice().sort((a, b) =>
+      String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
+    );
+
+    for (const order of orders) {
+      const searchAttempts = formatSkuSearchAttempts(order.skuSearchAttempts);
+      bodyParts.push(
+        [
+          `- Order: ${order.amazonOrderId || '(unknown)'}`,
+          `Amazon SKU: ${order.amazonSku || '(blank)'}`,
+          `NetSuite Search SKU: ${order.netsuiteSearchSku || record.netsuiteSearchSku || record.sku || '(blank)'}`,
+          `Match Strategy: ${order.skuMatchStrategy || '(blank)'}`,
+          `Search Attempts: ${searchAttempts || '(blank)'}`,
+          `Required: ${order.requiredQuantity || 0}`,
+          `Available: ${order.availableQuantity || 0}`,
+          `Shortage: ${order.shortageQuantity || 0}`,
+          `Purchase Date: ${order.purchaseDate || '(blank)'}`,
+          `Source: ${order.source || '(blank)'}`
+        ].join(' | ')
+      );
+    }
   }
 }
 
 bodyParts.push(
   '',
-  'No NetSuite invoices were created for these orders. The orders remain in retry memory and will be retried after the missing NetSuite items are created or the Amazon SKU mapping is corrected.'
+  'No NetSuite invoices were created for these orders. The orders remain in retry memory and will be retried after the missing NetSuite items, SKU mappings, or inventory quantities are corrected.'
 );
+
+const hasBatchValidationAlerts = sortedSkus.length > 0 || sortedInventoryShortages.length > 0;
 
 return [{
   key,
   resetValue: {},
-  hasMissingSkuAlerts: sortedSkus.length > 0,
-  sendEmail: sortedSkus.length > 0 ? 'Yes' : 'No',
+  hasMissingSkuAlerts: hasBatchValidationAlerts,
+  hasBatchValidationAlerts,
+  sendEmail: hasBatchValidationAlerts ? 'Yes' : 'No',
   to: config.recipients,
-  subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
+  subject: `[${input?.workflowArguments?.storeName}] Amazon FBA to NetSuite - FBA Invoice Sync - NetSuite validation batch alert (${orderIds.length} orders)`,
   body: bodyParts.join('\n')
 }];

@@ -5,7 +5,7 @@ Workflow: Shopify to NetSuite - Sync Order Updates (Big Country)
 Current scope:
 
 - `orders/edited` is built and has been tested for item quantity increase/decrease, item value decrease, and item addition.
-- Removed-line edit behavior changed after client confirmation: Shopify removed lines should now remove the NetSuite line and should be retested.
+- Cancelled-line edit behavior changed after client confirmation: when Shopify keeps the line with quantity `0`, NetSuite should keep the item line visible with quantity `0` and should be retested.
 - `orders/cancelled` is the next branch to enable.
 - Existing edit test record: Shopify order `#68073` / `7202376679490` and NetSuite Sales Order internal ID `47142255`.
 
@@ -35,7 +35,7 @@ Expected Gravity workflow arguments:
    - Code: `gravity-code/01-map-normalize-webhook.js`
    - Purpose: detect topic, normalize Shopify order ID/GID, preserve webhook metadata, capture edit notes, set alert recipients.
    - Edit notes carried from `body.order_edit.staff_note` and `body.order_edit.discounts.line_item.additions/removals[].description`.
-   - Note destination field remains `TO_BE_DEFINED` until the NetSuite target field is confirmed.
+   - Note destination is NetSuite item line `description`.
 
 3. If - Event Is Edit?
    - Type: if
@@ -100,10 +100,15 @@ Expected Gravity workflow arguments:
      - `A` means Pending Approval.
      - `B` means Pending Fulfillment.
      - Stop/alert for `C`, `D`, `E`, `F`, `H`, or unknown status.
-     - Stop/alert for missing or duplicate SKU matches.
+     - Stop/alert for missing or duplicate NetSuite SKU matches.
+     - Merge duplicate Shopify lines with the same SKU when they can safely map to one NetSuite item line.
+     - Multiple duplicate cancelled Shopify lines with quantity `0` collapse into one target line with quantity `0`.
+     - Stop/alert for duplicate positive Shopify SKU lines only when their positive rates or locations differ.
      - For `orders/cancelled`, build `action: apply_cancellation`.
      - For `orders/edited`, build `action: apply_edit`.
-     - Carry edit notes in `edit.notesToCarry[]` with `destinationFieldId = TO_BE_DEFINED`.
+     - Include Shopify lines with quantity `0` in `edit.targetLines[]` so cancelled items stay visible in NetSuite.
+     - Add line-item discount descriptions to that line's `descriptionNotes[]`.
+     - Add `staff_note` to `descriptionNotes[]` only for lines referenced by the edit delta; do not add it to older zero-quantity lines that merely appear in the full Shopify order.
 
 9. If - Plan Can Apply?
    - Type: if
@@ -117,8 +122,8 @@ Expected Gravity workflow arguments:
     - Action: Execute Custom Code
     - Code: `gravity-code/06-netsuite-apply-sales-order-update.js`
     - Purpose:
-      - Edit: update shipping address, item quantities/rates/locations, added lines, removed lines by removing the NetSuite line, and discount line/percent.
-      - Edit notes: return `mutationResult.notesToCarry[]` without writing those notes to NetSuite while the destination field is undefined.
+      - Edit: update shipping address, item quantities/rates/locations, added lines, cancelled lines with quantity `0`, and discount line/percent.
+      - Edit notes: append new notes to affected NetSuite item line `description` using ` - ` as the separator; preserve any description/notes already on the line.
       - Cancellation: set Sales Order header `orderstatus = C` / Cancelled and append cancellation memo note.
     - Step Completion Option:
       - Failure: Stop Workflow
@@ -213,5 +218,5 @@ Before live cancellation testing:
 - App-step logs and failure emails belong on Shopify/NetSuite connector steps, not on native map/if/memory steps.
 - Webhooks can run concurrently. The NetSuite apply step reloads and re-checks Sales Order status immediately before mutation.
 - This workflow does not write back to Shopify.
-- Shopify edit notes are carried through the workflow, but are not written to NetSuite until the destination field is defined.
+- Shopify edit notes are written to affected NetSuite item line `description` values.
 - Shipping cost, shipping method, taxes, refunds, tags, and custom attributes remain out of scope.

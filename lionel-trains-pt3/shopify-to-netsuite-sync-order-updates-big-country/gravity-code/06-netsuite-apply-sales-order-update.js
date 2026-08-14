@@ -44,6 +44,37 @@ function execute() {
       return Math.round((Number(value) || 0) * 100) / 100;
     }
 
+    function uniqueList(values) {
+      const seen = {};
+      const result = [];
+      (values || []).forEach(function(value) {
+        const text = String(value || '').trim();
+        if (!text || seen[text]) return;
+        seen[text] = true;
+        result.push(text);
+      });
+      return result;
+    }
+
+    function buildLineDescription(target, existingDescription) {
+      const existing = String(existingDescription || '').trim();
+      const base = existing || String(target.title || target.sku || '').trim();
+      const notes = uniqueList(target.descriptionNotes || []);
+      if (!notes.length) return base;
+
+      const existingParts = {};
+      base.split(' - ').forEach(function(part) {
+        const text = String(part || '').trim();
+        if (text) existingParts[text] = true;
+      });
+
+      const notesToAppend = notes.filter(function(note) {
+        return !existingParts[note];
+      });
+
+      return [base].concat(notesToAppend).filter(Boolean).join(' - ');
+    }
+
     function appendMemo(note) {
       if (!note) return;
       const existingMemo = salesOrder.getValue({ fieldId: 'memo' }) || '';
@@ -219,7 +250,8 @@ function execute() {
         salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(target.quantity, 0), forceSyncSourcing: true });
         salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'price', value: -1, forceSyncSourcing: true });
         salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'rate', value: toNumber(target.rate, 0), forceSyncSourcing: true });
-        salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'description', value: target.title || target.sku || '' });
+        const existingDescription = salesOrder.getCurrentSublistValue({ sublistId: 'item', fieldId: 'description' });
+        salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'description', value: buildLineDescription(target, existingDescription) });
         salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'isclosed', value: false, forceSyncSourcing: true });
         salesOrder.commitLine({ sublistId: 'item' });
       });
@@ -251,7 +283,7 @@ function execute() {
         addedLineCount,
         removedLineCount,
         notesToCarry,
-        notesDestinationStatus: notesToCarry.length ? 'destination_field_to_be_defined' : 'no_notes',
+        notesDestinationStatus: notesToCarry.length ? 'line_description_applied' : 'no_notes',
         discountResult,
       };
     }

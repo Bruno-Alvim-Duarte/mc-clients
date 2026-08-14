@@ -10,6 +10,113 @@ function roundQuantity(value) {
   return Math.round(toNumber(value) * 100000) / 100000;
 }
 
+function translateSku(value) {
+  const text = String(value || '').trim();
+  let sku = '';
+  let foundNumber = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const charCode = text.charCodeAt(i);
+    const isNumber = charCode >= 48 && charCode <= 57;
+
+    if (!isNumber && foundNumber) break;
+
+    if (isNumber) {
+      foundNumber = true;
+    }
+
+    sku += text.charAt(i);
+  }
+
+  return foundNumber ? sku : '';
+}
+
+function normalizeSkuKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function addExceptionMapping(lookup, sourceSku, targetSku) {
+  const source = String(sourceSku || '').trim();
+  const target = String(targetSku || '').trim();
+
+  if (!source || !target) return;
+
+  lookup[source] = target;
+  lookup[normalizeSkuKey(source)] = target;
+}
+
+function addExceptionSource(lookup, source) {
+  if (!source) return;
+
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (!item || typeof item !== 'object') continue;
+
+      addExceptionMapping(
+        lookup,
+        item.amazonSku || item.amazonSKU || item.sourceSku || item.sourceSKU || item.sku,
+        item.netsuiteSku || item.netSuiteSku || item.netsuiteSKU || item.itemId || item.itemid || item.targetSku || item.targetSKU
+      );
+    }
+
+    return;
+  }
+
+  if (typeof source === 'object') {
+    for (const key of Object.keys(source)) {
+      addExceptionMapping(lookup, key, source[key]);
+    }
+  }
+}
+
+function findExceptionSku(amazonSku) {
+  const lookup = {};
+
+  addExceptionSource(lookup, config.skuTranslationExceptions);
+  addExceptionSource(lookup, config.skuExceptions);
+  addExceptionSource(lookup, config?.netsuite?.skuTranslationExceptions);
+  addExceptionSource(lookup, config?.netsuite?.skuExceptions);
+
+  return lookup[amazonSku] || lookup[normalizeSkuKey(amazonSku)] || '';
+}
+
+function searchItemsBySku(sku) {
+  const itemSearch = search.create({
+    type: search.Type.ITEM,
+    filters: [
+      ['itemid', 'is', sku],
+      'AND',
+      ['isinactive', 'is', 'F']
+    ],
+    columns: [
+      search.createColumn({ name: 'internalid' }),
+      search.createColumn({ name: 'itemid' }),
+      search.createColumn({ name: 'displayname' }),
+      search.createColumn({ name: 'type' })
+    ]
+  });
+
+  const results = [];
+
+  itemSearch.run().each(function(result) {
+    results.push({
+      id: String(result.getValue({ name: 'internalid' })),
+      sku: result.getValue({ name: 'itemid' }),
+      displayName: result.getValue({ name: 'displayname' }),
+      type: result.getValue({ name: 'type' }),
+      recordType: result.recordType || null
+    });
+    return results.length < 2;
+  });
+
+  return results;
+}
+
+function alreadySearched(searchedSkus, sku) {
+  const key = normalizeSkuKey(sku);
+  return searchedSkus.some(item => normalizeSkuKey(item.sku) === key);
+}
+
 function shouldCheckInventory(item) {
   const type = String(item.type || '').toLowerCase();
   const recordType = String(item.recordType || '').toLowerCase();
@@ -138,39 +245,48 @@ function execute() {
     const locationId = String(config?.netsuite?.location || '').trim();
 
     for (const line of lines) {
-      const sku = String(line.sku || '').trim();
-      if (!sku) { missingSkus.push('(missing sku)'); continue; }
+      const amazonSku = String(line.sku || '').trim();
 
-      const itemSearch = search.create({
-        type: search.Type.ITEM,
-        filters: [
-          ['itemid', 'is', sku],
-          'AND',
-          ['isinactive', 'is', 'F']
-        ],
-        columns: [
-          search.createColumn({ name: 'internalid' }),
-          search.createColumn({ name: 'itemid' }),
-          search.createColumn({ name: 'displayname' }),
-          search.createColumn({ name: 'type' })
-        ]
-      });
+      if (!amazonSku) {
+        missingSkus.push('(missing sku)');
+        continue;
+      }
 
-      const results = [];
-      itemSearch.run().each(function(result) {
-        results.push({
-          id: String(result.getValue({ name: 'internalid' })),
-          sku: result.getValue({ name: 'itemid' }),
-          displayName: result.getValue({ name: 'displayname' }),
-          type: result.getValue({ name: 'type' }),
-          recordType: result.recordType || null
-        });
-        return results.length < 2;
-      });
+      const searchedSkus = [];
+      let netsuiteSearchSku = amazonSku;
+      let matchStrategy = 'exact';
+      let results = searchItemsBySku(netsuiteSearchSku);
+      searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+
+      if (results.length === 0) {
+        const exceptionSku = findExceptionSku(amazonSku);
+
+        if (exceptionSku && !alreadySearched(searchedSkus, exceptionSku)) {
+          netsuiteSearchSku = exceptionSku;
+          matchStrategy = 'exception';
+          results = searchItemsBySku(netsuiteSearchSku);
+          searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+        }
+      }
+
+      if (results.length === 0) {
+        const translatedSku = translateSku(amazonSku);
+
+        if (translatedSku && !alreadySearched(searchedSkus, translatedSku)) {
+          netsuiteSearchSku = translatedSku;
+          matchStrategy = 'translated';
+          results = searchItemsBySku(netsuiteSearchSku);
+          searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+        }
+      }
 
       if (results.length === 1) {
         matched.push({
           ...line,
+          amazonSku,
+          netsuiteSearchSku,
+          skuMatchStrategy: matchStrategy,
+          skuSearchAttempts: searchedSkus,
           netsuiteItemId: results[0].id,
           netsuiteItemSku: results[0].sku,
           netsuiteItemName: results[0].displayName,
@@ -180,17 +296,22 @@ function execute() {
         });
       }
       else if (results.length === 0) {
-        missingSkus.push(sku);
+        missingSkus.push(netsuiteSearchSku || amazonSku);
         missingSkuDetails.push({
-          sku,
+          sku: netsuiteSearchSku || amazonSku,
+          amazonSku,
+          netsuiteSearchSku,
+          skuMatchStrategy: matchStrategy,
+          skuSearchAttempts: searchedSkus,
           amazonOrderId: orderInfo.amazonOrderId,
           amazonOrderItemId: line.amazonOrderItemId || '',
           title: line.title || '',
           asin: line.asin || '',
-          quantity: line.quantity || 0
+          quantity: line.quantity || 0,
+          reason: 'No active NetSuite item found after exact SKU search and fallback translation'
         });
       }
-      else duplicateSkus.push(sku);
+      else duplicateSkus.push(netsuiteSearchSku);
     }
 
     if (!locationId) {
@@ -203,6 +324,8 @@ function execute() {
       if (!line.requiresInventoryAvailability) {
         inventoryCheckSkipped.push({
           sku: line.sku,
+          amazonSku: line.amazonSku || line.sku,
+          netsuiteSearchSku: line.netsuiteSearchSku,
           netsuiteItemId: line.netsuiteItemId,
           netsuiteItemType: line.netsuiteItemType,
           reason: 'Item type does not consume inventory.'
@@ -217,6 +340,8 @@ function execute() {
         requiredByItem[key] = {
           netsuiteItemId: key,
           sku: line.sku,
+          amazonSku: line.amazonSku || line.sku,
+          netsuiteSearchSku: line.netsuiteSearchSku,
           netsuiteItemSku: line.netsuiteItemSku,
           netsuiteItemName: line.netsuiteItemName,
           netsuiteItemType: line.netsuiteItemType,

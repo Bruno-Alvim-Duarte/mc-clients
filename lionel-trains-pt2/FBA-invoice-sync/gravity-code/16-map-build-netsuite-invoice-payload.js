@@ -45,6 +45,10 @@ if (amazonPurchaseDate) {
 const itemLines = (resolved.matched || []).map(line => ({
   kind: 'amazon_item',
   sku: line.sku,
+  amazonSku: line.amazonSku || line.sku,
+  netsuiteSearchSku: line.netsuiteSearchSku || line.netsuiteItemSku,
+  skuMatchStrategy: line.skuMatchStrategy || '',
+  skuSearchAttempts: line.skuSearchAttempts || [],
   title: line.title,
   itemInternalId: line.netsuiteItemId,
   itemType: line.netsuiteItemType,
@@ -123,6 +127,10 @@ addCharge(
 const validationErrors = [];
 const missingSkuDetails = (resolved.missingSkuDetails || []).map(line => ({
   sku: String(line.sku || '').trim(),
+  amazonSku: String(line.amazonSku || line.sku || '').trim(),
+  netsuiteSearchSku: String(line.netsuiteSearchSku || line.sku || '').trim(),
+  skuMatchStrategy: line.skuMatchStrategy || '',
+  skuSearchAttempts: line.skuSearchAttempts || [],
   amazonOrderId: order.amazonOrderId,
   marketplaceId: order.marketplaceId || null,
   purchaseDate: order.purchaseDate || null,
@@ -132,10 +140,28 @@ const missingSkuDetails = (resolved.missingSkuDetails || []).map(line => ({
   asin: line.asin || '',
   quantity: Number(line.quantity || 0) || 0
 })).filter(line => line.sku);
+const inventoryShortageDetails = (resolved.inventoryShortages || []).map(line => ({
+  sku: String(line.sku || line.netsuiteItemSku || '').trim(),
+  amazonSku: String(line.amazonSku || line.sku || '').trim(),
+  netsuiteSearchSku: String(line.netsuiteSearchSku || line.netsuiteItemSku || '').trim(),
+  skuMatchStrategy: line.skuMatchStrategy || '',
+  skuSearchAttempts: line.skuSearchAttempts || [],
+  netsuiteItemId: String(line.netsuiteItemId || '').trim(),
+  netsuiteItemName: line.netsuiteItemName || '',
+  amazonOrderId: order.amazonOrderId,
+  marketplaceId: order.marketplaceId || null,
+  purchaseDate: order.purchaseDate || null,
+  lastUpdateDate: order.lastUpdateDate || null,
+  requiredQuantity: Number(line.requiredQuantity || 0) || 0,
+  availableQuantity: Number(line.availableQuantity || 0) || 0,
+  shortageQuantity: Number(line.shortageQuantity || 0) || 0,
+  locationId: line.locationId || resolved.inventoryLocationId || config.netsuite.location || '',
+  source: line.source || ''
+})).filter(line => line.sku || line.netsuiteItemId);
 
 if (!resolved.hasAllItems) {
   validationErrors.push(
-    `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}.`
+    `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then configured exceptions, then the automatic SKU translation.`
   );
 }
 
@@ -164,26 +190,30 @@ if (!itemLines.length) {
 }
 
 const hasMissingNetSuiteSkus = missingSkuDetails.length > 0;
+const hasInventoryShortages = inventoryShortageDetails.length > 0;
 const hasDuplicateNetSuiteSkus = Boolean(resolved.duplicateSkus && resolved.duplicateSkus.length);
-const hasInventoryValidationErrors = Boolean(
-  (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) ||
-  (resolved.inventoryShortages && resolved.inventoryShortages.length)
-);
+const hasInventoryCheckErrors = Boolean(resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length);
 const hasMissingChargeMappings = missingChargeMappings.length > 0;
 const missingOnlyNoItemLines = hasMissingNetSuiteSkus && !itemLines.length;
+const hasBatchValidationAlerts = hasMissingNetSuiteSkus || hasInventoryShortages;
 const hasNonMissingSkuValidationErrors =
   hasDuplicateNetSuiteSkus ||
-  hasInventoryValidationErrors ||
+  hasInventoryCheckErrors ||
   hasMissingChargeMappings ||
   (!itemLines.length && !missingOnlyNoItemLines);
+const shouldDeferBatchValidationEmail = hasBatchValidationAlerts && !hasNonMissingSkuValidationErrors;
 
 return {
   canCreate: validationErrors.length === 0,
   validationErrors,
   hasMissingNetSuiteSkus,
+  hasInventoryShortages,
+  hasBatchValidationAlerts,
   hasNonMissingSkuValidationErrors,
-  shouldDeferMissingSkuEmail: hasMissingNetSuiteSkus && !hasNonMissingSkuValidationErrors,
+  shouldDeferMissingSkuEmail: shouldDeferBatchValidationEmail,
+  shouldDeferBatchValidationEmail,
   missingSkuDetails,
+  inventoryShortageDetails,
   amazonOrderId: order.amazonOrderId,
   externalId: order.amazonOrderId,
   entity: config.netsuite.customerInternalId,

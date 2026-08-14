@@ -27,18 +27,6 @@ function normalizeSkuKey(value) {
   return normalizeSku(value).toLowerCase();
 }
 
-function duplicateValues(values) {
-  const seen = new Set();
-  const dupes = new Set();
-  for (const rawValue of values) {
-    const value = normalizeSkuKey(rawValue);
-    if (!value) continue;
-    if (seen.has(value)) dupes.add(rawValue);
-    seen.add(value);
-  }
-  return Array.from(dupes);
-}
-
 function buildStopPlan(reason, detail, alertLevel = 'warning') {
   return [{
     workflowName: shopifyOrder.workflowName,
@@ -64,8 +52,8 @@ function normalizeNoteToCarry(note) {
     source: note.source || 'unknown',
     label: note.label || 'Shopify edit note',
     value: String(note.value || '').trim(),
-    destinationFieldId: note.destinationFieldId || 'TO_BE_DEFINED',
-    destinationFieldLabel: note.destinationFieldLabel || 'To be defined',
+    destinationFieldId: note.destinationFieldId || 'item.description',
+    destinationFieldLabel: note.destinationFieldLabel || 'NetSuite item line description',
     changeType: note.changeType || null,
     lineItemId: note.lineItemId || null,
     fixedAmount: note.fixedAmount || null,
@@ -73,9 +61,133 @@ function normalizeNoteToCarry(note) {
   };
 }
 
+function addIdVariants(set, value) {
+  if (value === null || value === undefined || value === '') return;
+  const raw = String(value);
+  set.add(raw);
+  set.add(raw.split('/').pop());
+}
+
+function collectLineItemIds(value, ids = new Set()) {
+  if (!value) return ids;
+  if (Array.isArray(value)) {
+    value.forEach(item => collectLineItemIds(item, ids));
+    return ids;
+  }
+  if (typeof value !== 'object') return ids;
+
+  [
+    value.id,
+    value.line_item_id,
+    value.lineItemId,
+    value.admin_graphql_api_id,
+    value.legacyResourceId,
+  ].forEach(id => addIdVariants(ids, id));
+
+  Object.keys(value).forEach(key => {
+    const nested = value[key];
+    if (nested && typeof nested === 'object') collectLineItemIds(nested, ids);
+  });
+
+  return ids;
+}
+
+function lineIdsForTarget(line) {
+  const sourceLines = Array.isArray(line.sourceLines) && line.sourceLines.length
+    ? line.sourceLines
+    : [line];
+  const ids = new Set();
+
+  sourceLines.forEach(sourceLine => {
+    [
+      sourceLine.id,
+      sourceLine.numericId,
+      sourceLine.legacyResourceId,
+      sourceLine.id ? String(sourceLine.id).split('/').pop() : null,
+    ].forEach(id => addIdVariants(ids, id));
+  });
+
+  return Array.from(ids);
+}
+
+function targetLocationForLine(line) {
+  return line.fulfillmentLocation?.netsuiteLocationId || workflowArguments.defaultLocationID || null;
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(value => value !== null && value !== undefined && value !== '').map(String)));
+}
+
+function groupShopifyLinesBySku(lines) {
+  const groupsBySku = {};
+
+  lines.forEach(line => {
+    const key = normalizeSkuKey(line.sku);
+    groupsBySku[key] = groupsBySku[key] || [];
+    groupsBySku[key].push(line);
+  });
+
+  const groupedLines = [];
+  const unsafeDuplicateSkus = [];
+
+  Object.keys(groupsBySku).forEach(key => {
+    const group = groupsBySku[key];
+    if (group.length === 1) {
+      groupedLines.push({
+        ...group[0],
+        sourceLines: group,
+        duplicateLineCount: 1,
+      });
+      return;
+    }
+
+    const positiveLines = group.filter(line => line.quantity > 0);
+    const positiveRates = uniqueValues(positiveLines.map(line => String(roundMoney(line.originalUnitPrice || 0))));
+    const positiveLocations = uniqueValues(positiveLines.map(targetLocationForLine));
+
+    if (positiveRates.length > 1 || positiveLocations.length > 1) {
+      unsafeDuplicateSkus.push(group[0].sku);
+      return;
+    }
+
+    const preferredLine = positiveLines[0] || group[0];
+    groupedLines.push({
+      ...preferredLine,
+      quantity: group.reduce((sum, line) => sum + Number(line.quantity || 0), 0),
+      originalUnitPrice: roundMoney(preferredLine.originalUnitPrice || 0),
+      sourceLines: group,
+      duplicateLineCount: group.length,
+      duplicateLinePolicy: positiveLines.length
+        ? 'merged_same_sku_lines'
+        : 'merged_cancelled_zero_quantity_lines',
+    });
+  });
+
+  return { groupedLines, unsafeDuplicateSkus };
+}
+
 const notesToCarry = (shopifyOrder.editNotes || shopifyOrder.orderEdit?.notes || [])
   .map(normalizeNoteToCarry)
   .filter(note => note.value);
+
+const staffNote = notesToCarry.find(note => note.source === 'order_edit.staff_note')?.value || '';
+const changedLineItemIds = collectLineItemIds(shopifyOrder.orderEdit?.lineItems || {});
+const descriptionNotesByLineItemId = {};
+
+notesToCarry.forEach(note => {
+  if (note.lineItemId) {
+    addIdVariants(changedLineItemIds, note.lineItemId);
+  }
+
+  if (note.source.indexOf('.description') !== -1 && note.lineItemId) {
+    const ids = new Set();
+    addIdVariants(ids, note.lineItemId);
+    ids.forEach(id => {
+      descriptionNotesByLineItemId[id] = descriptionNotesByLineItemId[id] || [];
+      descriptionNotesByLineItemId[id].push(note.value);
+    });
+  }
+});
 
 if (!shopifyOrder.name) {
   return buildStopPlan('missing_shopify_order_name', 'Shopify order name is required to find the NetSuite Sales Order.');
@@ -144,22 +256,27 @@ if (shopifyOrder.isCancellation) {
   }];
 }
 
-const activeShopifyLines = (shopifyOrder.lineItems || [])
+const shopifyLinesForSync = (shopifyOrder.lineItems || [])
   .map(line => ({
     ...line,
     sku: normalizeSku(line.sku),
     quantity: Number(line.quantity || 0),
     originalUnitPrice: roundMoney(line.originalUnitPrice || 0),
   }))
-  .filter(line => line.sku && line.quantity > 0);
+  .filter(line => line.sku && line.quantity >= 0);
 
-if (!activeShopifyLines.length) {
-  return buildStopPlan('no_active_shopify_lines', `No active Shopify lines found for order ${shopifyOrder.name}.`);
+if (!shopifyLinesForSync.length) {
+  return buildStopPlan('no_shopify_lines', `No Shopify lines found for order ${shopifyOrder.name}.`);
 }
 
-const duplicateShopifySkus = duplicateValues(activeShopifyLines.map(line => line.sku));
-if (duplicateShopifySkus.length) {
-  return buildStopPlan('duplicate_shopify_skus', `Cannot safely update by SKU because Shopify has duplicate active SKUs: ${duplicateShopifySkus.join(', ')}.`);
+const groupedShopifyLinesResult = groupShopifyLinesBySku(shopifyLinesForSync);
+const shopifyLinesGroupedBySku = groupedShopifyLinesResult.groupedLines;
+
+if (groupedShopifyLinesResult.unsafeDuplicateSkus.length) {
+  return buildStopPlan(
+    'duplicate_shopify_skus',
+    `Cannot safely merge duplicate Shopify SKUs with different positive rates or locations: ${groupedShopifyLinesResult.unsafeDuplicateSkus.join(', ')}.`
+  );
 }
 
 const itemMatchesBySku = netsuiteLookup.itemMatchesBySku || {};
@@ -169,22 +286,47 @@ const itemMatchesByNormalizedSku = Object.keys(itemMatchesBySku).reduce((acc, sk
 }, {});
 const missingSkus = [];
 const duplicateNetSuiteSkus = [];
+const netsuiteLines = netsuiteLookup.lines || [];
 
-const targetLines = activeShopifyLines.map(line => {
+const targetLines = shopifyLinesGroupedBySku.map(line => {
   const match = itemMatchesByNormalizedSku[normalizeSkuKey(line.sku)] || { count: 0, matches: [] };
   if (match.count === 0) missingSkus.push(line.sku);
   if (match.count > 1) duplicateNetSuiteSkus.push(line.sku);
+  const netsuiteItemId = match.item?.internalId || null;
+  const matchingNetSuiteLine = netsuiteItemId
+    ? netsuiteLines.find(nsLine => String(nsLine.itemInternalId || '') === String(netsuiteItemId) && !nsLine.isClosed)
+    : null;
+  const targetLocationId = targetLocationForLine(line);
+  const changedByLineId = lineIdsForTarget(line).some(id => changedLineItemIds.has(id));
+  const changedByValue = !matchingNetSuiteLine ||
+    Number(matchingNetSuiteLine.quantity || 0) !== line.quantity ||
+    roundMoney(matchingNetSuiteLine.rate || 0) !== line.originalUnitPrice ||
+    (targetLocationId && String(matchingNetSuiteLine.location || '') !== String(targetLocationId));
+  const lineDescriptionNotes = [];
+
+  lineIdsForTarget(line).forEach(id => {
+    (descriptionNotesByLineItemId[id] || []).forEach(note => lineDescriptionNotes.push(note));
+  });
+
+  if (staffNote && changedByLineId) {
+    lineDescriptionNotes.push(staffNote);
+  }
 
   return {
     shopifyLineItemId: line.id,
     shopifyLineItemNumericId: line.numericId,
+    shopifyLineItemIds: lineIdsForTarget(line),
     sku: line.sku,
     title: line.title || line.name || line.sku,
     quantity: line.quantity,
     rate: line.originalUnitPrice,
-    netsuiteItemId: match.item?.internalId || null,
-    netsuiteLocationId: line.fulfillmentLocation?.netsuiteLocationId || workflowArguments.defaultLocationID || null,
+    netsuiteItemId,
+    netsuiteLocationId: targetLocationId,
     shopifyFulfillmentLocation: line.fulfillmentLocation || null,
+    descriptionNotes: Array.from(new Set(lineDescriptionNotes.filter(Boolean))),
+    isCancelledLine: line.quantity === 0,
+    duplicateLineCount: line.duplicateLineCount || 1,
+    duplicateLinePolicy: line.duplicateLinePolicy || null,
   };
 });
 
@@ -230,7 +372,7 @@ return [{
     discountPercentFieldId: 'custbody_shopify_disc_pct',
     defaultLocationId: workflowArguments.defaultLocationID || null,
     notesToCarry,
-    notesDestinationStatus: notesToCarry.length ? 'destination_field_to_be_defined' : 'no_notes',
+    notesDestinationStatus: notesToCarry.length ? 'line_description' : 'no_notes',
     memoNote: `Shopify edit synced for ${shopifyOrder.name} at ${new Date().toISOString()}`,
   },
 }];

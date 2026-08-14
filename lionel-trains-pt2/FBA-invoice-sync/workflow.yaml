@@ -104,6 +104,7 @@ steps:
         checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
         retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
         missingSkuBatchAlertKey: 'lionel_fba_invoice_missing_sku_batch_alert',
+        skuTranslationExceptions: wfArguments.skuTranslationExceptions || {},
         batchId: input.system?.nowIso || new Date().toISOString(),
         netsuite: {
           customerInternalId: wfArguments.customerID,
@@ -471,16 +472,16 @@ steps:
                       const config = input['map9QOY']?.[0] || {};
                       const order = input['mapQC7W']?.[0] || {};
                       const resolved = input['netsuiteExecuteCustomCode0OJ2']?.[0] || {};
-
+                      
                       const round = n => Math.round((Number(n) || 0) * 100) / 100;
                       const isPlaceholder = v => !v || String(v).startsWith('{{');
-
+                      
                       function toDateOnly(value) {
                         if (!value) return null;
-
+                      
                         const raw = String(value).trim();
                         const firstTen = raw.slice(0, 10);
-
+                      
                         if (
                           firstTen.length === 10 &&
                           firstTen.charAt(4) === '-' &&
@@ -488,33 +489,37 @@ steps:
                         ) {
                           return firstTen;
                         }
-
+                      
                         const date = new Date(value);
                         if (Number.isNaN(date.getTime())) return null;
-
+                      
                         return date.toISOString().slice(0, 10);
                       }
-
+                      
                       function firstDayOfMonthDateOnly(value) {
                         const dateOnly = toDateOnly(value);
                         if (!dateOnly) return null;
-
+                      
                         return `${dateOnly.slice(0, 7)}-01`;
                       }
-
+                      
                       const amazonPurchaseDate = toDateOnly(order.purchaseDate);
                       const fallbackTranDate = firstDayOfMonthDateOnly(
                         input.system?.nowIso || new Date().toISOString()
                       );
                       const memoParts = [`Amazon FBA order ${order.amazonOrderId}`];
-
+                      
                       if (amazonPurchaseDate) {
                         memoParts.push(`Amazon order date ${amazonPurchaseDate}`);
                       }
-
+                      
                       const itemLines = (resolved.matched || []).map(line => ({
                         kind: 'amazon_item',
                         sku: line.sku,
+                        amazonSku: line.amazonSku || line.sku,
+                        netsuiteSearchSku: line.netsuiteSearchSku || line.netsuiteItemSku,
+                        skuMatchStrategy: line.skuMatchStrategy || '',
+                        skuSearchAttempts: line.skuSearchAttempts || [],
                         title: line.title,
                         itemInternalId: line.netsuiteItemId,
                         itemType: line.netsuiteItemType,
@@ -527,7 +532,7 @@ steps:
                         inventoryLocationId: line.inventoryLocationId,
                         inventoryAvailabilitySource: line.inventoryAvailabilitySource,
                       }));
-
+                      
                       const totals = (order.lines || []).reduce(
                         (acc, line) => {
                           acc.shipping += line.shippingPrice || 0;
@@ -538,7 +543,7 @@ steps:
                           acc.discounts +=
                             (line.promotionDiscount || 0) +
                             (line.shippingDiscount || 0);
-
+                      
                           return acc;
                         },
                         {
@@ -550,22 +555,22 @@ steps:
                           discounts: 0,
                         }
                       );
-
+                      
                       const shippingCost = round(totals.shipping);
-
+                      
                       const chargeLines = [];
                       const missingChargeMappings = [];
-
+                      
                       function addCharge(kind, itemId, amount, description) {
                         const rounded = round(amount);
-
+                      
                         if (Math.abs(rounded) < 0.005) return;
-
+                      
                         if (isPlaceholder(itemId)) {
                           missingChargeMappings.push(kind);
                           return;
                         }
-
+                      
                         chargeLines.push({
                           kind,
                           itemInternalId: String(itemId),
@@ -575,24 +580,28 @@ steps:
                           description,
                         });
                       }
-
+                      
                       addCharge(
                         'giftWrap',
                         config.chargeItems.giftWrap,
                         totals.giftWrap,
                         `Amazon gift wrap for order ${order.amazonOrderId}`
                       );
-
+                      
                       addCharge(
                         'promotionDiscount',
                         config.chargeItems.promotionDiscount,
                         -Math.abs(totals.discounts),
                         `Amazon discounts for order ${order.amazonOrderId}`
                       );
-
+                      
                       const validationErrors = [];
                       const missingSkuDetails = (resolved.missingSkuDetails || []).map(line => ({
                         sku: String(line.sku || '').trim(),
+                        amazonSku: String(line.amazonSku || line.sku || '').trim(),
+                        netsuiteSearchSku: String(line.netsuiteSearchSku || line.sku || '').trim(),
+                        skuMatchStrategy: line.skuMatchStrategy || '',
+                        skuSearchAttempts: line.skuSearchAttempts || [],
                         amazonOrderId: order.amazonOrderId,
                         marketplaceId: order.marketplaceId || null,
                         purchaseDate: order.purchaseDate || null,
@@ -602,19 +611,37 @@ steps:
                         asin: line.asin || '',
                         quantity: Number(line.quantity || 0) || 0
                       })).filter(line => line.sku);
-
+                      const inventoryShortageDetails = (resolved.inventoryShortages || []).map(line => ({
+                        sku: String(line.sku || line.netsuiteItemSku || '').trim(),
+                        amazonSku: String(line.amazonSku || line.sku || '').trim(),
+                        netsuiteSearchSku: String(line.netsuiteSearchSku || line.netsuiteItemSku || '').trim(),
+                        skuMatchStrategy: line.skuMatchStrategy || '',
+                        skuSearchAttempts: line.skuSearchAttempts || [],
+                        netsuiteItemId: String(line.netsuiteItemId || '').trim(),
+                        netsuiteItemName: line.netsuiteItemName || '',
+                        amazonOrderId: order.amazonOrderId,
+                        marketplaceId: order.marketplaceId || null,
+                        purchaseDate: order.purchaseDate || null,
+                        lastUpdateDate: order.lastUpdateDate || null,
+                        requiredQuantity: Number(line.requiredQuantity || 0) || 0,
+                        availableQuantity: Number(line.availableQuantity || 0) || 0,
+                        shortageQuantity: Number(line.shortageQuantity || 0) || 0,
+                        locationId: line.locationId || resolved.inventoryLocationId || config.netsuite.location || '',
+                        source: line.source || ''
+                      })).filter(line => line.sku || line.netsuiteItemId);
+                      
                       if (!resolved.hasAllItems) {
                         validationErrors.push(
-                          `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}.`
+                          `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then configured exceptions, then the automatic SKU translation.`
                         );
                       }
-
+                      
                       if (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) {
                         validationErrors.push(
                           `NetSuite inventory availability check failed: ${resolved.inventoryCheckErrors.join('; ')}.`
                         );
                       }
-
+                      
                       if (resolved.inventoryShortages && resolved.inventoryShortages.length) {
                         validationErrors.push(
                           `Insufficient NetSuite inventory at location ${resolved.inventoryLocationId || config.netsuite.location}: ${resolved.inventoryShortages.map(line =>
@@ -622,38 +649,42 @@ steps:
                           ).join('; ')}.`
                         );
                       }
-
+                      
                       if (missingChargeMappings.length) {
                         validationErrors.push(
                           `Missing NetSuite charge item mappings: ${missingChargeMappings.join(', ')}.`
                         );
                       }
-
+                      
                       if (!itemLines.length) {
                         validationErrors.push('No invoice item lines were created.');
                       }
-
+                      
                       const hasMissingNetSuiteSkus = missingSkuDetails.length > 0;
+                      const hasInventoryShortages = inventoryShortageDetails.length > 0;
                       const hasDuplicateNetSuiteSkus = Boolean(resolved.duplicateSkus && resolved.duplicateSkus.length);
-                      const hasInventoryValidationErrors = Boolean(
-                        (resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length) ||
-                        (resolved.inventoryShortages && resolved.inventoryShortages.length)
-                      );
+                      const hasInventoryCheckErrors = Boolean(resolved.inventoryCheckErrors && resolved.inventoryCheckErrors.length);
                       const hasMissingChargeMappings = missingChargeMappings.length > 0;
                       const missingOnlyNoItemLines = hasMissingNetSuiteSkus && !itemLines.length;
+                      const hasBatchValidationAlerts = hasMissingNetSuiteSkus || hasInventoryShortages;
                       const hasNonMissingSkuValidationErrors =
                         hasDuplicateNetSuiteSkus ||
-                        hasInventoryValidationErrors ||
+                        hasInventoryCheckErrors ||
                         hasMissingChargeMappings ||
                         (!itemLines.length && !missingOnlyNoItemLines);
-
+                      const shouldDeferBatchValidationEmail = hasBatchValidationAlerts && !hasNonMissingSkuValidationErrors;
+                      
                       return {
                         canCreate: validationErrors.length === 0,
                         validationErrors,
                         hasMissingNetSuiteSkus,
+                        hasInventoryShortages,
+                        hasBatchValidationAlerts,
                         hasNonMissingSkuValidationErrors,
-                        shouldDeferMissingSkuEmail: hasMissingNetSuiteSkus && !hasNonMissingSkuValidationErrors,
+                        shouldDeferMissingSkuEmail: shouldDeferBatchValidationEmail,
+                        shouldDeferBatchValidationEmail,
                         missingSkuDetails,
+                        inventoryShortageDetails,
                         amazonOrderId: order.amazonOrderId,
                         externalId: order.amazonOrderId,
                         entity: config.netsuite.customerInternalId,
@@ -697,8 +728,10 @@ steps:
                             const config = input['map9QOY']?.[0] || {};
                             const order = input['mapQC7W']?.[0] || {};
                             const payload = input['mapL4FH']?.[0] || {};
-                            const shouldDeferMissingSkuEmail = Boolean(payload.shouldDeferMissingSkuEmail);
-
+                            const shouldDeferBatchValidationEmail = Boolean(
+                              payload.shouldDeferBatchValidationEmail || payload.shouldDeferMissingSkuEmail
+                            );
+                            
                             const shortages = payload.inventoryShortages || [];
                             const inventoryDetails = shortages.length
                               ? [
@@ -716,14 +749,14 @@ steps:
                                   )
                                 ].join('\n')
                               : '';
-
+                            
                             const inventoryCheckErrors = payload.inventoryCheckErrors && payload.inventoryCheckErrors.length
                               ? `\n\nInventory check error(s):\n${payload.inventoryCheckErrors.map(e => '- ' + e).join('\n')}`
                               : '';
-
+                            
                             return [{
                               to: config.recipients,
-                              sendEmail: shouldDeferMissingSkuEmail ? 'No' : 'Yes',
+                              sendEmail: shouldDeferBatchValidationEmail ? 'No' : 'Yes',
                               subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Skipped order ${order.amazonOrderId}`,
                               body: `Amazon FBA order ${order.amazonOrderId} was skipped and added to retry memory.\n\nReason(s):\n${(payload.validationErrors || []).map(e => '- ' + e).join('\n')}${inventoryDetails}${inventoryCheckErrors}\n\nMarketplace: ${order.marketplaceId || ''}\nPurchase Date: ${order.purchaseDate || ''}\nLast Update Date: ${order.lastUpdateDate || ''}\n\nNo NetSuite invoice was created.`
                             }];
@@ -735,11 +768,12 @@ steps:
                           code: |
                             const config = input['map9QOY']?.[0] || {};
                             const payload = input['mapL4FH']?.[0] || {};
-
+                            
                             const key = config.missingSkuBatchAlertKey || 'lionel_fba_invoice_missing_sku_batch_alert';
                             const batchId = config.batchId || config.updatedBefore || input.system?.nowIso || new Date().toISOString();
                             const missingSkuDetails = payload.missingSkuDetails || [];
-
+                            const inventoryShortageDetails = payload.inventoryShortageDetails || [];
+                            
                             function parseObject(value) {
                               if (!value) return {};
                               if (typeof value === 'string') {
@@ -750,7 +784,7 @@ steps:
                               }
                               return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
                             }
-
+                            
                             const memory = input.memory?.environment || input.memory || {};
                             const existing = parseObject(memory[key]);
                             const batch = existing.batchId === batchId
@@ -760,37 +794,52 @@ steps:
                                   workflowName: config.workflowName || 'Amazon FBA to NetSuite - FBA Invoice Sync',
                                   startedAt: input.system?.nowIso || new Date().toISOString(),
                                   skus: {},
+                                  inventoryShortages: {},
                                   orderIds: []
                                 };
-
+                            
                             if (!batch.skus || typeof batch.skus !== 'object' || Array.isArray(batch.skus)) {
                               batch.skus = {};
                             }
-
+                            
+                            if (!batch.inventoryShortages || typeof batch.inventoryShortages !== 'object' || Array.isArray(batch.inventoryShortages)) {
+                              batch.inventoryShortages = {};
+                            }
+                            
                             if (!Array.isArray(batch.orderIds)) {
                               batch.orderIds = [];
                             }
-
+                            
                             const seenOrderIds = new Set(batch.orderIds.map(id => String(id || '').trim()).filter(Boolean));
-
+                            
                             for (const detail of missingSkuDetails) {
                               const sku = String(detail.sku || '').trim();
                               const amazonOrderId = String(detail.amazonOrderId || payload.amazonOrderId || '').trim();
                               if (!sku || !amazonOrderId) continue;
-
+                            
                               if (!batch.skus[sku]) {
                                 batch.skus[sku] = {
                                   sku,
+                                  amazonSkus: [],
                                   orders: []
                                 };
                               }
-
+                            
+                              if (!Array.isArray(batch.skus[sku].amazonSkus)) {
+                                batch.skus[sku].amazonSkus = [];
+                              }
+                            
+                              const amazonSku = String(detail.amazonSku || '').trim();
+                              if (amazonSku && batch.skus[sku].amazonSkus.indexOf(amazonSku) === -1) {
+                                batch.skus[sku].amazonSkus.push(amazonSku);
+                              }
+                            
                               const orderKey = [
                                 amazonOrderId,
                                 detail.amazonOrderItemId || '',
                                 detail.quantity || 0
                               ].join('|');
-
+                            
                               const alreadyExists = batch.skus[sku].orders.some(order =>
                                 [
                                   order.amazonOrderId,
@@ -798,11 +847,15 @@ steps:
                                   order.quantity || 0
                                 ].join('|') === orderKey
                               );
-
+                            
                               if (!alreadyExists) {
                                 batch.skus[sku].orders.push({
                                   amazonOrderId,
                                   amazonOrderItemId: detail.amazonOrderItemId || '',
+                                  amazonSku,
+                                  netsuiteSearchSku: detail.netsuiteSearchSku || sku,
+                                  skuMatchStrategy: detail.skuMatchStrategy || '',
+                                  skuSearchAttempts: detail.skuSearchAttempts || [],
                                   title: detail.title || '',
                                   asin: detail.asin || '',
                                   quantity: Number(detail.quantity || 0) || 0,
@@ -811,19 +864,85 @@ steps:
                                   lastUpdateDate: detail.lastUpdateDate || ''
                                 });
                               }
-
+                            
                               if (!seenOrderIds.has(amazonOrderId)) {
                                 batch.orderIds.push(amazonOrderId);
                                 seenOrderIds.add(amazonOrderId);
                               }
                             }
-
+                            
+                            for (const detail of inventoryShortageDetails) {
+                              const sku = String(detail.sku || '').trim();
+                              const netsuiteItemId = String(detail.netsuiteItemId || '').trim();
+                              const locationId = String(detail.locationId || payload.inventoryLocationId || '').trim();
+                              const amazonOrderId = String(detail.amazonOrderId || payload.amazonOrderId || '').trim();
+                              if ((!sku && !netsuiteItemId) || !amazonOrderId) continue;
+                            
+                              const shortageKey = [
+                                sku || '(missing sku)',
+                                netsuiteItemId || '(missing item)',
+                                locationId || '(missing location)'
+                              ].join('|');
+                            
+                              if (!batch.inventoryShortages[shortageKey]) {
+                                batch.inventoryShortages[shortageKey] = {
+                                  sku,
+                                  amazonSku: detail.amazonSku || '',
+                                  netsuiteSearchSku: detail.netsuiteSearchSku || sku,
+                                  netsuiteItemId,
+                                  netsuiteItemName: detail.netsuiteItemName || '',
+                                  locationId,
+                                  orders: []
+                                };
+                              }
+                            
+                              const orderKey = [
+                                amazonOrderId,
+                                detail.requiredQuantity || 0,
+                                detail.availableQuantity || 0,
+                                detail.shortageQuantity || 0
+                              ].join('|');
+                            
+                              const alreadyExists = batch.inventoryShortages[shortageKey].orders.some(order =>
+                                [
+                                  order.amazonOrderId,
+                                  order.requiredQuantity || 0,
+                                  order.availableQuantity || 0,
+                                  order.shortageQuantity || 0
+                                ].join('|') === orderKey
+                              );
+                            
+                              if (!alreadyExists) {
+                                batch.inventoryShortages[shortageKey].orders.push({
+                                  amazonOrderId,
+                                  amazonSku: detail.amazonSku || '',
+                                  netsuiteSearchSku: detail.netsuiteSearchSku || sku,
+                                  skuMatchStrategy: detail.skuMatchStrategy || '',
+                                  skuSearchAttempts: detail.skuSearchAttempts || [],
+                                  requiredQuantity: Number(detail.requiredQuantity || 0) || 0,
+                                  availableQuantity: Number(detail.availableQuantity || 0) || 0,
+                                  shortageQuantity: Number(detail.shortageQuantity || 0) || 0,
+                                  marketplaceId: detail.marketplaceId || payload.marketplaceId || '',
+                                  purchaseDate: detail.purchaseDate || payload.originalAmazonPurchaseDate || '',
+                                  lastUpdateDate: detail.lastUpdateDate || '',
+                                  source: detail.source || ''
+                                });
+                              }
+                            
+                              if (!seenOrderIds.has(amazonOrderId)) {
+                                batch.orderIds.push(amazonOrderId);
+                                seenOrderIds.add(amazonOrderId);
+                              }
+                            }
+                            
                             batch.updatedAt = input.system?.nowIso || new Date().toISOString();
-
+                            
                             return [{
                               key,
                               value: batch,
-                              hasMissingSkuDetails: missingSkuDetails.length > 0
+                              hasMissingSkuDetails: missingSkuDetails.length > 0,
+                              hasInventoryShortageDetails: inventoryShortageDetails.length > 0,
+                              hasBatchAlertDetails: missingSkuDetails.length > 0 || inventoryShortageDetails.length > 0
                             }];
                         - stepNumber: 28
                           name: Memory - Memory - Set Missing SKU Batch Alert
@@ -1211,7 +1330,7 @@ steps:
       const config = input['map9QOY']?.[0] || {};
       const key = config.missingSkuBatchAlertKey || 'lionel_fba_invoice_missing_sku_batch_alert';
       const batchId = config.batchId || config.updatedBefore || '';
-
+      
       function parseObject(value) {
         if (!value) return {};
         if (typeof value === 'string') {
@@ -1222,65 +1341,148 @@ steps:
         }
         return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
       }
-
+      
       const memory = input.memory?.environment || input.memory || {};
       const batch = parseObject(memory[key]);
       const skus = batch.batchId === batchId && batch.skus && typeof batch.skus === 'object'
         ? Object.values(batch.skus)
         : [];
-
+      const inventoryShortages = batch.batchId === batchId && batch.inventoryShortages && typeof batch.inventoryShortages === 'object'
+        ? Object.values(batch.inventoryShortages)
+        : [];
+      
       const sortedSkus = skus
         .filter(record => record && record.sku && Array.isArray(record.orders) && record.orders.length)
         .sort((a, b) => String(a.sku).localeCompare(String(b.sku)));
-
+      const sortedInventoryShortages = inventoryShortages
+        .filter(record => record && Array.isArray(record.orders) && record.orders.length)
+        .sort((a, b) =>
+          String(a.sku || a.netsuiteItemId || '').localeCompare(String(b.sku || b.netsuiteItemId || '')) ||
+          String(a.locationId || '').localeCompare(String(b.locationId || ''))
+        );
+      
       const orderIds = Array.from(new Set(
-        sortedSkus.flatMap(record =>
-          record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
-        )
+        [
+          ...sortedSkus.flatMap(record =>
+            record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
+          ),
+          ...sortedInventoryShortages.flatMap(record =>
+            record.orders.map(order => String(order.amazonOrderId || '').trim()).filter(Boolean)
+          )
+        ]
       )).sort();
-
+      
       const bodyParts = [
-        'Amazon FBA orders were skipped because their SKUs were not found as active NetSuite items.',
+        'Amazon FBA orders were skipped because NetSuite validation failed before invoice creation.',
         '',
         `Missing SKU count: ${sortedSkus.length}`,
+        `Insufficient inventory item/location count: ${sortedInventoryShortages.length}`,
         `Affected order count: ${orderIds.length}`,
-        '',
-        'Missing SKU details:'
       ];
-
-      for (const record of sortedSkus) {
-        bodyParts.push('', `SKU: ${record.sku}`);
-
-        const orders = record.orders.slice().sort((a, b) =>
-          String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
-        );
-
-        for (const order of orders) {
-          bodyParts.push(
-            [
-              `- Order: ${order.amazonOrderId || '(unknown)'}`,
-              `Qty: ${order.quantity || 0}`,
-              `Amazon Order Item ID: ${order.amazonOrderItemId || '(blank)'}`,
-              `ASIN: ${order.asin || '(blank)'}`,
-              `Purchase Date: ${order.purchaseDate || '(blank)'}`,
-              `Title: ${order.title || '(blank)'}`
-            ].join(' | ')
+      
+      function formatSkuSearchAttempts(attempts) {
+        if (!Array.isArray(attempts) || !attempts.length) return '';
+      
+        return attempts
+          .map(attempt =>
+            `${attempt.strategy || 'search'}=${attempt.sku || '(blank)'} (${attempt.resultCount || 0})`
+          )
+          .join(', ');
+      }
+      
+      if (sortedSkus.length) {
+        bodyParts.push('', 'Missing SKU details:');
+      
+        for (const record of sortedSkus) {
+          bodyParts.push('', `SKU: ${record.sku}`);
+      
+          const amazonSkus = Array.isArray(record.amazonSkus)
+            ? record.amazonSkus.filter(Boolean)
+            : [];
+      
+          if (amazonSkus.length) {
+            bodyParts.push(`Amazon SKU(s): ${amazonSkus.join(', ')}`);
+          }
+      
+          const orders = record.orders.slice().sort((a, b) =>
+            String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
           );
+      
+          for (const order of orders) {
+            const searchAttempts = formatSkuSearchAttempts(order.skuSearchAttempts);
+            bodyParts.push(
+              [
+                `- Order: ${order.amazonOrderId || '(unknown)'}`,
+                `Qty: ${order.quantity || 0}`,
+                `Amazon SKU: ${order.amazonSku || '(blank)'}`,
+                `NetSuite Search SKU: ${order.netsuiteSearchSku || record.sku || '(blank)'}`,
+                `Match Strategy: ${order.skuMatchStrategy || '(blank)'}`,
+                `Search Attempts: ${searchAttempts || '(blank)'}`,
+                `Amazon Order Item ID: ${order.amazonOrderItemId || '(blank)'}`,
+                `ASIN: ${order.asin || '(blank)'}`,
+                `Purchase Date: ${order.purchaseDate || '(blank)'}`,
+                `Title: ${order.title || '(blank)'}`
+              ].join(' | ')
+            );
+          }
         }
       }
-
+      
+      if (sortedInventoryShortages.length) {
+        bodyParts.push('', 'Insufficient NetSuite inventory details:');
+      
+        for (const record of sortedInventoryShortages) {
+          bodyParts.push(
+            '',
+            [
+              `SKU: ${record.sku || '(blank)'}`,
+              `Amazon SKU: ${record.amazonSku || '(blank)'}`,
+              `NetSuite Search SKU: ${record.netsuiteSearchSku || record.sku || '(blank)'}`,
+              `NetSuite Item ID: ${record.netsuiteItemId || '(blank)'}`,
+              `Location: ${record.locationId || '(blank)'}`,
+              `Item Name: ${record.netsuiteItemName || '(blank)'}`
+            ].join(' | ')
+          );
+      
+          const orders = record.orders.slice().sort((a, b) =>
+            String(a.amazonOrderId || '').localeCompare(String(b.amazonOrderId || ''))
+          );
+      
+          for (const order of orders) {
+            const searchAttempts = formatSkuSearchAttempts(order.skuSearchAttempts);
+            bodyParts.push(
+              [
+                `- Order: ${order.amazonOrderId || '(unknown)'}`,
+                `Amazon SKU: ${order.amazonSku || '(blank)'}`,
+                `NetSuite Search SKU: ${order.netsuiteSearchSku || record.netsuiteSearchSku || record.sku || '(blank)'}`,
+                `Match Strategy: ${order.skuMatchStrategy || '(blank)'}`,
+                `Search Attempts: ${searchAttempts || '(blank)'}`,
+                `Required: ${order.requiredQuantity || 0}`,
+                `Available: ${order.availableQuantity || 0}`,
+                `Shortage: ${order.shortageQuantity || 0}`,
+                `Purchase Date: ${order.purchaseDate || '(blank)'}`,
+                `Source: ${order.source || '(blank)'}`
+              ].join(' | ')
+            );
+          }
+        }
+      }
+      
       bodyParts.push(
         '',
-        'No NetSuite invoices were created for these orders. The orders remain in retry memory and will be retried after the missing NetSuite items are created or the Amazon SKU mapping is corrected.'
+        'No NetSuite invoices were created for these orders. The orders remain in retry memory and will be retried after the missing NetSuite items, SKU mappings, or inventory quantities are corrected.'
       );
-
+      
+      const hasBatchValidationAlerts = sortedSkus.length > 0 || sortedInventoryShortages.length > 0;
+      
       return [{
         key,
         resetValue: {},
-        hasMissingSkuAlerts: sortedSkus.length > 0,
-        sendEmail: sortedSkus.length > 0 ? 'Yes' : 'No',
+        hasMissingSkuAlerts: hasBatchValidationAlerts,
+        hasBatchValidationAlerts,
+        sendEmail: hasBatchValidationAlerts ? 'Yes' : 'No',
         to: config.recipients,
-        subject: `Amazon FBA to NetSuite - FBA Invoice Sync - Missing NetSuite SKUs (${sortedSkus.length})`,
+        subject: `Amazon FBA to NetSuite - FBA Invoice Sync - NetSuite validation batch alert (${orderIds.length} orders)`,
         body: bodyParts.join('\n')
       }];
   - stepNumber: 43
