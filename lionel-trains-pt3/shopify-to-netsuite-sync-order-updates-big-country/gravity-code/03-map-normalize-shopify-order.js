@@ -174,6 +174,5 @@ return [{
   totalAmount: money(sourceOrder.currentTotalPriceSet || sourceOrder.current_total_price_set || sourceOrder.totalPriceSet || sourceOrder.total_price_set),
   shippingAmount: money(sourceOrder.totalShippingPriceSet || sourceOrder.total_shipping_price_set),
   orderEdit: webhook.orderEdit,
-  editNotes: webhook.orderEdit?.notes || [],
   rawCancellationBody: webhook.isCancellation ? webhook.rawBody : null,
 }];

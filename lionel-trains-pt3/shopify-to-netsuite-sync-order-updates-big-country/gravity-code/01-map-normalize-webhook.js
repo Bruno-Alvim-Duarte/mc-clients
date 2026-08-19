@@ -1,5 +1,7 @@
-const WORKFLOW_NAME = 'Shopify to NetSuite - Sync Order Updates (Big Country)';
-const ALERT_RECIPIENTS = 'bruno@mindcloud.co,AMiller@lionel.com,jjones@lionel.com';
+const WORKFLOW_NAME = `Shopify to NetSuite - Sync Order Updates (${input?.workflowArguments?.storeName})`;
+const ALERT_RECIPIENTS = `bruno@mindcloud.co,AMiller@lionel.com,jjones@lionel.com, ${input?.workflowArguments?.storePersonEmail}`;
+const RETRY_QUEUE_KEY = 'order_update_retry_queue';
+
 
 function findWebhookEnvelope(source) {
   if (!source || typeof source !== 'object') return {};
@@ -123,6 +125,11 @@ const orderGid =
 const isEdit = topic === 'orders/edited' || !!body.order_edit;
 const isCancellation = topic === 'orders/cancelled' || !!body.cancelled_at;
 const orderEditNotes = isEdit ? collectOrderEditNotes(orderEdit) : [];
+const retryIdentity = [
+  headers['x-shopify-event-id'] || headers['X-Shopify-Event-Id'] || null,
+  topic || null,
+  orderNumericId || lastGidPart(orderGid) || null,
+].filter(Boolean).join(':') || null;
 
 return [{
   workflowName: WORKFLOW_NAME,
@@ -162,4 +169,10 @@ return [{
     shippingLines: orderEdit.shipping_lines || { additions: [], removals: [] },
   } : null,
   rawBody: body,
+  retry: {
+    queueKey: RETRY_QUEUE_KEY,
+    identity: retryIdentity,
+    webhookBody: body,
+    hasWebhookBody: !!body && typeof body === 'object' && Object.keys(body).length > 0,
+  },
 }];

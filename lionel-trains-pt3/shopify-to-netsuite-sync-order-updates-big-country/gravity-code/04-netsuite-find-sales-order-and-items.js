@@ -1,4 +1,4 @@
-const shopifyOrder = ${JSON.stringify(input['REPLACE_WITH_03_MAP_NORMALIZE_SHOPIFY_ORDER_STEP_KEY']?.[0] || {})};
+const shopifyOrder = ${JSON.stringify(input['mapCPX5']?.[0] || {})};
 
 function execute() {
   try {

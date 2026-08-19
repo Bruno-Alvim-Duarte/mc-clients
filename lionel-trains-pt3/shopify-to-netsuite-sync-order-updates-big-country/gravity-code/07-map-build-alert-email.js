@@ -1,13 +1,14 @@
-const plan = input['REPLACE_WITH_05_MAP_BUILD_UPDATE_PLAN_STEP_KEY']?.[0] || {};
-const applyResult = input['REPLACE_WITH_06_NETSUITE_APPLY_UPDATE_STEP_KEY']?.[0] || null;
+const plan = input['mapAX8Y']?.[0] || {};
+const applyResult = input['netsuiteExecuteCustomCodePOSP']?.[0] || null;
 
 const shopifyOrder = plan.shopifyOrder || {};
 const salesOrder = plan.netsuite?.salesOrder || {};
 const failed = applyResult && applyResult.success === false;
+const logType = failed ? 'error' : 'warning';
 
 const subject = failed
-  ? 'Shopify to NetSuite - Sync Order Updates (Big Country) - NetSuite Update Failed'
-  : 'Shopify to NetSuite - Sync Order Updates (Big Country) - Manual Review Required';
+  ? `[${input?.workflowArguments?.storeName}] Shopify to NetSuite - Sync Order Updates - NetSuite Update Failed`
+  : 'Shopify to NetSuite - Sync Order Updates - Manual Review Required';
 
 const body = [
   'Hello,',
@@ -40,8 +41,25 @@ const body = [
   'This is an automated message. Please do not reply to this email.',
 ].filter(line => line !== null && line !== undefined).join('\n');
 
+const logMessage = [
+  failed
+    ? '[NetSuite] Shopify order update failed while applying NetSuite changes.'
+    : '[NetSuite] Shopify order update requires manual review.',
+  failed
+    ? `Error: ${applyResult.message || '(no message returned)'}.`
+    : `Reason: ${plan.reason || '(no reason returned)'}.`,
+  shopifyOrder.name ? `Shopify Order: ${shopifyOrder.name}.` : null,
+  (salesOrder.internalId || applyResult?.salesOrderId)
+    ? `Sales Order Internal ID: ${salesOrder.internalId || applyResult.salesOrderId}.`
+    : null,
+  plan.detail ? `Detail: ${plan.detail}` : null,
+].filter(Boolean).join(' ');
+
 return [{
   shouldSend: !!plan.shouldAlert || failed,
+  shouldLog: true,
+  logType,
+  logMessage,
   to: plan.alertRecipients || 'bruno@mindcloud.co,AMiller@lionel.com,jjones@lionel.com',
   subject,
   body,

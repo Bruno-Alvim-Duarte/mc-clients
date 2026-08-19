@@ -1,4 +1,4 @@
-const normalized = input['REPLACE_WITH_01_MAP_NORMALIZE_WEBHOOK_STEP_KEY']?.[0] || {};
+const normalized = input['mapLR5J']?.[0] || {};
 
 const orderGid =
   normalized.order?.gid ||
@@ -78,7 +78,6 @@ query GetOrderForNetSuiteUpdate($id: ID!) {
       edges {
         node {
           id
-          legacyResourceId
           sku
           title
           name
@@ -96,12 +95,10 @@ query GetOrderForNetSuiteUpdate($id: ID!) {
           }
           variant {
             id
-            legacyResourceId
             sku
           }
           product {
             id
-            legacyResourceId
           }
         }
       }
@@ -114,7 +111,6 @@ query GetOrderForNetSuiteUpdate($id: ID!) {
           assignedLocation {
             location {
               id
-              legacyResourceId
               name
             }
           }
@@ -126,7 +122,6 @@ query GetOrderForNetSuiteUpdate($id: ID!) {
                 remainingQuantity
                 lineItem {
                   id
-                  legacyResourceId
                   sku
                 }
               }

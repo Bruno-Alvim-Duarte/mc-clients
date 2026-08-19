@@ -33,7 +33,8 @@ Business behavior:
 - Add Shopify order_edit.staff_note to the description only for NetSuite item lines referenced by the edit delta using " - " as the separator. Preserve existing description/notes and do not add it to older zero-quantity lines that merely appear in the full Shopify order.
 - Do not update shipping cost, shipping method, taxes, refunds, Shopify tags, or custom attributes.
 - Do not write back to Shopify.
-- On NetSuite update failure, write a memory entry, send an email, and stop.
+- On NetSuite update failure, send an email, add the original webhook body to a retry KV queue, and stop.
+- Add a daily scheduled retry path that reads the retry KV queue, clears it, loops through the saved webhook bodies, and POSTs each body back to this workflow's webhook URL.
 
 Alert recipients:
 bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com
@@ -41,6 +42,8 @@ bruno@mindcloud.co, AMiller@lionel.com, jjones@lionel.com
 Workflow arguments expected:
 - locationID
 - discountID
+- retryWebhookUrl
+- retryQueueKey optional; default `big_country_order_update_retry_queue`
 
 Create the following steps in this exact order.
 
@@ -48,40 +51,92 @@ Create the following steps in this exact order.
 - Type: webhook trigger
 - Topics: orders/edited and orders/cancelled.
 
-2. Map - Normalize Webhook
+1A. Daily Scheduled Retry Trigger
+- Type: scheduled trigger
+- Cadence: once per day.
+
+2. Map - Detect Trigger Source
+- Type: map
+- Placeholder code only:
+  return [{ todo: "Paste code from 00-map-detect-trigger-source.js here" }];
+- Purpose: output `isWebhook`, `isScheduled`, `retryQueueKey`, and `retryWebhookUrl`.
+
+3. If - Is Scheduled Retry Run
+- Type: if/else
+- Condition should evaluate Step 2 output isScheduled equals true.
+- True branch: run Steps 3A through 3E, then end the workflow as success.
+- False branch: continue to Step 4.
+
+3A. KV/Memory - Get Retry Queue
+- Type: Get Memory / KV read.
+- Key should come from Step 2 output retryQueueKey.
+
+3B. KV/Memory - Clear Retry Queue Snapshot
+- Type: Set Memory / KV write.
+- Key should come from Step 2 output retryQueueKey.
+- Value should be an empty array: `[]`.
+- This intentionally drains the queue before replay. Any replay that fails again will be added back by the normal webhook failure branch.
+
+3C. Map - Normalize Retry Queue
+- Type: map
+- Placeholder code only:
+  return [{ todo: "Paste code from 09-map-normalize-retry-queue.js here" }];
+- Purpose: turn the KV value into one row per saved webhook body.
+
+3D. Loop - Retry Queued Webhook Bodies
+- Type: loop.
+- Input should be Step 3C output rows.
+- Inside the loop, create:
+  - Map - Build Retry Webhook Request
+    - Type: map
+    - Placeholder code only:
+      return [{ todo: "Paste code from 10-map-build-retry-webhook-request.js here" }];
+  - HTTP - POST Retry Body To Workflow Webhook
+    - Type: HTTP/app action capable of POST.
+    - URL = loop map output url
+    - Method = POST
+    - Headers = loop map output headers
+    - Body = loop map output body
+
+3E. Flow Control - End Scheduled Retry Run
+- Type: Flow Control.
+- Action: end workflow as success.
+
+4. Map - Normalize Webhook
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 01-map-normalize-webhook.js here" }];
 - Purpose: normalize webhook topic, Shopify order ID/GID, order name when available, event type, edit notes, and alert recipients.
+- The snippet also exposes the original webhook body for the retry queue.
 
-3. If - Event Is Edit
+5. If - Event Is Edit
 - Type: if/else
-- Condition should evaluate Step 2 output isEdit equals true.
-- True branch: continue to Step 4.
-- False branch: continue to Step 3A.
-
-3A. If - Event Is Cancellation
-- Type: if/else
-- Condition should evaluate Step 2 output isCancellation equals true.
+- Condition should evaluate Step 4 output isEdit equals true.
 - True branch: continue to Step 6.
+- False branch: continue to Step 5A.
+
+5A. If - Event Is Cancellation
+- Type: if/else
+- Condition should evaluate Step 4 output isCancellation equals true.
+- True branch: continue to Step 8.
 - False branch: log unsupported webhook topic and end the workflow as success.
 - This replaces the current Future - Cancellation Path / Not Yet Enabled branch.
 
-4. Map - Build Shopify Full Order Query
+6. Map - Build Shopify Full Order Query
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 02-map-build-shopify-order-query.js here" }];
 - Purpose: build the GraphQL query and variables for the Shopify full order fetch.
 
-5. Shopify - GraphQL Beta - Get Full Order
+7. Shopify - GraphQL Beta - Get Full Order
 - Type: Shopify app action
 - Connection: Shopify Big Country Toys
 - Action: GraphQL Beta
-- Query should eventually come from Step 4 output query.
-- Variables should eventually come from Step 4 output variables.
+- Query should eventually come from Step 6 output query.
+- Variables should eventually come from Step 6 output variables.
 - If you cannot wire the fields until code is pasted, leave clear notes on this step saying:
-  Query = Step 4 output query
-  Variables = Step 4 output variables
+  Query = Step 6 output query
+  Variables = Step 6 output variables
 - Step Completion Option / Flow Control:
   - On failure: Stop Workflow
   - Log level: Error
@@ -91,13 +146,13 @@ Create the following steps in this exact order.
   - Failure log message should start with [Shopify].
   - Enable success log if available. Success log should start with [Shopify].
 
-6. Map - Normalize Shopify Order
+8. Map - Normalize Shopify Order
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 03-map-normalize-shopify-order.js here" }];
 - Purpose: normalize the full Shopify order for edit events or the webhook body for cancellation events, and carry edit notes forward.
 
-7. NetSuite - Execute Custom Code - Find Sales Order And Items
+9. NetSuite - Execute Custom Code - Find Sales Order And Items
 - Type: NetSuite app action
 - Connection: NetSuite sandbox
 - Action: Execute Custom Code
@@ -114,19 +169,19 @@ Create the following steps in this exact order.
   - Failure log message should start with [NetSuite].
   - Enable success log if available. Success log should start with [NetSuite].
 
-8. Map - Build Update Plan
+10. Map - Build Update Plan
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 05-map-build-update-plan.js here" }];
 - Purpose: apply business rules and decide whether to apply edit, apply cancellation, skip, alert, or stop. Include cancelled Shopify lines with quantity 0 in edit.targetLines[] and carry descriptionNotes[] per affected line.
 
-9. If - Plan Can Apply
+11. If - Plan Can Apply
 - Type: if/else
-- Condition should evaluate Step 8 output canApply equals true.
-- True branch: continue to Step 10.
-- False branch: continue to Step 12.
+- Condition should evaluate Step 10 output canApply equals true.
+- True branch: continue to Step 12.
+- False branch: continue to Step 14.
 
-10. NetSuite - Execute Custom Code - Apply Sales Order Update
+12. NetSuite - Execute Custom Code - Apply Sales Order Update
 - Type: NetSuite app action
 - Connection: NetSuite sandbox
 - Action: Execute Custom Code
@@ -146,64 +201,74 @@ Create the following steps in this exact order.
   - Failure log message should start with [NetSuite].
   - Enable success log. Success log should start with [NetSuite].
 
-11. If - NetSuite Apply Failed
+13. If - NetSuite Apply Failed
 - Type: if/else
-- Condition should evaluate Step 10 output success equals false.
-- True branch: continue to Step 12.
-- False branch: continue to Step 15.
+- Condition should evaluate Step 12 output success equals false.
+- True branch: continue to Step 14.
+- False branch: continue to Step 17.
 
-12. Map - Build Alert Email
+14. Map - Build Alert Email
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 07-map-build-alert-email.js here" }];
 - Purpose: build a manual review or failure email from the update plan and NetSuite result.
 
-13. If - Should Send Alert
+15. If - Should Send Alert
 - Type: if/else
-- Condition should evaluate Step 12 output shouldSend equals true.
-- True branch: continue to Step 14.
-- False branch: continue to Step 16.
+- Condition should evaluate Step 14 output shouldSend equals true.
+- True branch: continue to Step 16.
+- False branch: continue to Step 18.
 
-14. Flow Control - Send Manual Review Or Failure Email
+16. Flow Control - Send Manual Review Or Failure Email
 - Type: Flow Control
 - Action: Send email
-- To should come from Step 12 output to.
-- Subject should come from Step 12 output subject.
-- Body should come from Step 12 output body.
+- To should come from Step 14 output to.
+- Subject should come from Step 14 output subject.
+- Body should come from Step 14 output body.
 - If fields cannot be wired before code is pasted, leave notes saying:
-  To = Step 12 output to
-  Subject = Step 12 output subject
-  Body = Step 12 output body
+  To = Step 14 output to
+  Subject = Step 14 output subject
+  Body = Step 14 output body
 
-15. Flow Control - Log Success
+17. Flow Control - Log Success
 - Type: Flow Control
 - Action: Info log and end workflow as success.
 - Message should start with [NetSuite].
 - Suggested message:
   [NetSuite] Synced Shopify order update to NetSuite Sales Order.
 
-16. Map - Build Memory Entry
+18. KV/Memory - Get Retry Queue
+- Type: Get Memory / KV read.
+- Key should come from Step 2 output retryQueueKey, or use literal `big_country_order_update_retry_queue`.
+
+19. Map - Append Current Webhook To Retry Queue
+- Type: map
+- Placeholder code only:
+  return [{ todo: "Paste code from 11-map-append-current-webhook-to-retry-queue.js here" }];
+- Purpose: append the current original webhook body to the retry queue when the update failed or when the plan failure is retryable.
+
+20. If - Should Write Retry Queue
+- Type: if/else
+- Condition should evaluate Step 19 output shouldWrite equals true.
+- True branch: continue to Step 21.
+- False branch: continue to Step 23.
+
+21. KV/Memory - Set Retry Queue
+- Type: Set Memory
+- Key should come from Step 19 output key.
+- Value should come from Step 19 output value.
+- Saves on: always.
+- If fields cannot be wired before code is pasted, leave notes saying:
+  Key = Step 19 output key
+  Value = Step 19 output value
+
+22. Map - Build Memory Entry Optional Audit
 - Type: map
 - Placeholder code only:
   return [{ todo: "Paste code from 08-map-build-memory-entry.js here" }];
-- Purpose: prepare a memory entry for failures or manual-review outcomes.
+- Purpose: optional per-run audit memory value. This is separate from the retry queue.
 
-17. If - Should Write Memory
-- Type: if/else
-- Condition should evaluate Step 16 output shouldWrite equals true.
-- True branch: continue to Step 18.
-- False branch: continue to Step 19.
-
-18. Memory - Set Failure Or Manual Review Entry
-- Type: Set Memory
-- Key should come from Step 16 output key.
-- Value should come from Step 16 output value.
-- Saves on: always.
-- If fields cannot be wired before code is pasted, leave notes saying:
-  Key = Step 16 output key
-  Value = Step 16 output value
-
-19. Flow Control - End Skipped Or Alerted Run
+23. Flow Control - End Skipped Or Alerted Run
 - Type: Flow Control
 - Action: end workflow as success for skipped/manual-review branches after logging a warning.
 - Warning log message should start with [NetSuite] or [Shopify] depending on what Gravity supports.
