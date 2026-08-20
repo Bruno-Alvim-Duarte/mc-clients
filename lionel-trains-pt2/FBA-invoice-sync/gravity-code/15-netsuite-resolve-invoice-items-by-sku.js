@@ -256,7 +256,28 @@ function execute() {
       let netsuiteSearchSku = amazonSku;
       let matchStrategy = 'exact';
       let results = searchItemsBySku(netsuiteSearchSku);
+      const translatedSku = translateSku(amazonSku);
       searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+
+      if (results.length === 0) {
+        if (translatedSku && !alreadySearched(searchedSkus, translatedSku)) {
+          netsuiteSearchSku = translatedSku;
+          matchStrategy = 'translated';
+          results = searchItemsBySku(netsuiteSearchSku);
+          searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+        }
+      }
+
+      if (results.length === 0) {
+        const translatedSkuWithM = translatedSku && !/m$/i.test(translatedSku) ? translatedSku + 'M' : '';
+
+        if (translatedSkuWithM && !alreadySearched(searchedSkus, translatedSkuWithM)) {
+          netsuiteSearchSku = translatedSkuWithM;
+          matchStrategy = 'translated_appended_m';
+          results = searchItemsBySku(netsuiteSearchSku);
+          searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
+        }
+      }
 
       if (results.length === 0) {
         const exceptionSku = findExceptionSku(amazonSku);
@@ -264,17 +285,6 @@ function execute() {
         if (exceptionSku && !alreadySearched(searchedSkus, exceptionSku)) {
           netsuiteSearchSku = exceptionSku;
           matchStrategy = 'exception';
-          results = searchItemsBySku(netsuiteSearchSku);
-          searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
-        }
-      }
-
-      if (results.length === 0) {
-        const translatedSku = translateSku(amazonSku);
-
-        if (translatedSku && !alreadySearched(searchedSkus, translatedSku)) {
-          netsuiteSearchSku = translatedSku;
-          matchStrategy = 'translated';
           results = searchItemsBySku(netsuiteSearchSku);
           searchedSkus.push({ strategy: matchStrategy, sku: netsuiteSearchSku, resultCount: results.length });
         }
@@ -308,7 +318,7 @@ function execute() {
           title: line.title || '',
           asin: line.asin || '',
           quantity: line.quantity || 0,
-          reason: 'No active NetSuite item found after exact SKU search and fallback translation'
+          reason: 'No active NetSuite item found after exact SKU search, base SKU translation, base SKU + M search, and configured exception map'
         });
       }
       else duplicateSkus.push(netsuiteSearchSku);

@@ -39,6 +39,6 @@ The parser and payload builder were tested through `maps/00_build_runtime_config
 
 ## Notes
 
-- Tax rows are skipped only after validating tax and withheld tax net to zero. If tax net is not zero, the workflow must skip that settlement and alert.
+- Tax rows are skipped only after validating tax and withheld tax. If tax net is not zero, only the net variance is posted to fee account `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`.
 - Catch-all rows exist in the sample and are included in Amazon Selling Fees as offsets when positive. Lionel approval for catch-all behavior is required before go-live.
 - The sample balances without a clearing account. Cash account `1113` acts as the clearing line through the settlement header `total-amount`.

@@ -155,16 +155,16 @@ Confirmed AR/Cash balancing rule:
 - Principal invoice value is credited to Accounts Receivable `123`.
 - Cash account `1113` is debited for the settlement payout/deposit from the header `total-amount`.
 - Fee/refund/storage/fulfillment/reimbursement/catch-all lines use their mapped non-Cash accounts by sign.
-- Do not add a separate clearing or balancing account. If the generated Journal Entry does not balance after tax is excluded and all non-tax rows are categorized, skip the settlement and alert.
+- Do not add a separate clearing or balancing account. If tax and withheld tax leave a non-zero net variance, route only that net variance to fee account `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`. If the generated Journal Entry still does not balance after all rows and approved variances are categorized, skip the settlement and alert.
 
 Tax handling:
 
 - The workflow must validate tax rows.
 - Amazon tax and withheld tax should normally net to zero.
 - Use a compound rule such as `amount-type = ItemPrice` plus `amount-description` containing `Tax`, paired against `ItemWithheldTax`.
-- If tax and withheld tax do not net to zero, skip that settlement, save failure state, and send failure email.
+- If tax and withheld tax do not net to zero, post only the net variance to fee account `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`.
 - If tax nets to zero, omit tax rows from the Journal Entry.
-- Do not silently omit tax rows without validating the tax net first.
+- Do not silently omit tax rows without validating the tax net first or routing the approved variance.
 
 Catch-all:
 

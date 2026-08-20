@@ -19,11 +19,14 @@ const CONFIG = {
     amazonSellingFees: "336",
     amazonFulfillmentFees: "434",
     amazonStorageFee: "523",
-    refunds: "260"
+    refunds: "260",
+    settlementVarianceFees: "336"
   },
   departmentId: "34",
+  taxVarianceDepartmentId: "34",
   allowCatchAllBySign: true,
   recordTaxLines: false,
+  routeTaxVarianceToFeeAccount: true,
   failWhenTaxDoesNotNetToZero: true,
   moneyTolerance: 0.01
 };
@@ -39,6 +42,10 @@ if (runtimeConfig.netsuite && runtimeConfig.netsuite.departmentId) {
   CONFIG.departmentId = runtimeConfig.netsuite.departmentId;
 }
 
+if (runtimeConfig.netsuite && runtimeConfig.netsuite.taxVarianceDepartmentId) {
+  CONFIG.taxVarianceDepartmentId = runtimeConfig.netsuite.taxVarianceDepartmentId;
+}
+
 if (runtimeConfig.behavior) {
   CONFIG.allowCatchAllBySign = runtimeConfig.behavior.allowCatchAllBySign !== undefined
     ? runtimeConfig.behavior.allowCatchAllBySign
@@ -46,6 +53,9 @@ if (runtimeConfig.behavior) {
   CONFIG.recordTaxLines = runtimeConfig.behavior.recordTaxLines !== undefined
     ? runtimeConfig.behavior.recordTaxLines
     : CONFIG.recordTaxLines;
+  CONFIG.routeTaxVarianceToFeeAccount = runtimeConfig.behavior.routeTaxVarianceToFeeAccount !== undefined
+    ? runtimeConfig.behavior.routeTaxVarianceToFeeAccount
+    : CONFIG.routeTaxVarianceToFeeAccount;
   CONFIG.failWhenTaxDoesNotNetToZero = runtimeConfig.behavior.failWhenTaxDoesNotNetToZero !== undefined
     ? runtimeConfig.behavior.failWhenTaxDoesNotNetToZero
     : CONFIG.failWhenTaxDoesNotNetToZero;
@@ -452,8 +462,26 @@ if (Math.abs(reportDifference) > CONFIG.moneyTolerance) {
 const taxNet = roundMoney(taxRows.reduce((sum, row) => sum + Number(row.amountNumber || 0), 0));
 const taxPositive = roundMoney(taxRows.filter(row => Number(row.amountNumber || 0) > 0).reduce((sum, row) => sum + Number(row.amountNumber || 0), 0));
 const taxNegative = roundMoney(taxRows.filter(row => Number(row.amountNumber || 0) < 0).reduce((sum, row) => sum + Number(row.amountNumber || 0), 0));
+const shouldRouteTaxVariance = (
+  !CONFIG.recordTaxLines &&
+  CONFIG.routeTaxVarianceToFeeAccount &&
+  Math.abs(taxNet) > CONFIG.moneyTolerance
+);
 
-if (CONFIG.failWhenTaxDoesNotNetToZero && Math.abs(taxNet) > CONFIG.moneyTolerance) {
+if (shouldRouteTaxVariance) {
+  const bucket = getCategory(
+    "AMAZON_SETTLEMENT_TAX_VARIANCE",
+    CONFIG.accountIds.settlementVarianceFees || CONFIG.accountIds.amazonSellingFees
+  );
+  bucket.rowCount += taxRows.length;
+  bucket.departmentId = CONFIG.taxVarianceDepartmentId || CONFIG.departmentId;
+  bucket.reasons["Amazon tax and withheld tax variance routed to fee account"] = 1;
+  addAmount(bucket, taxNet);
+  validations.push(
+    `Amazon tax and withheld tax variance ${taxNet} routed to fee account ` +
+    `${bucket.accountId} department ${bucket.departmentId}`
+  );
+} else if (CONFIG.failWhenTaxDoesNotNetToZero && Math.abs(taxNet) > CONFIG.moneyTolerance) {
   errors.push(`Amazon tax and withheld tax do not net to zero for settlement ${settlementId}; tax net ${taxNet}`);
 }
 
@@ -493,7 +521,15 @@ const settlement = {
     positiveAmount: taxPositive,
     negativeAmount: taxNegative,
     netAmount: taxNet,
-    recordedInJournal: CONFIG.recordTaxLines
+    recordedInJournal: CONFIG.recordTaxLines,
+    netVarianceRecordedInJournal: shouldRouteTaxVariance,
+    varianceAccountId: shouldRouteTaxVariance
+      ? CONFIG.accountIds.settlementVarianceFees || CONFIG.accountIds.amazonSellingFees
+      : null,
+    varianceDepartmentId: shouldRouteTaxVariance
+      ? CONFIG.taxVarianceDepartmentId || CONFIG.departmentId
+      : null,
+    varianceCategory: shouldRouteTaxVariance ? "AMAZON_SETTLEMENT_TAX_VARIANCE" : null
   },
   catchAllRows,
   uncategorizedRows,

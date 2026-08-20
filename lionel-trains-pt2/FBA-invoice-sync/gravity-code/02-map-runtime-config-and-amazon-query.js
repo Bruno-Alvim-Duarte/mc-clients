@@ -2,6 +2,12 @@ const state = input['map3HMU']?.[0] || {};
 const checkpoint = state.checkpoint || {};
 const updatedAfter = checkpoint.lastUpdatedAfter || '2026-05-01T00:00:00';
 const wfArguments = input["workflowArguments"]
+const defaultSkuTranslationExceptions = {
+  '203-stickerless': '203',
+  '203Merchant Barcode': '203',
+  '470AF': '470',
+  'YZ-O27H-G3TU': '811'
+};
 
 return [{
   workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
@@ -18,7 +24,10 @@ return [{
   checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
   retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
   missingSkuBatchAlertKey: 'lionel_fba_invoice_missing_sku_batch_alert',
-  skuTranslationExceptions: wfArguments.skuTranslationExceptions || {},
+  skuTranslationExceptions: {
+    ...defaultSkuTranslationExceptions,
+    ...(wfArguments.skuTranslationExceptions || {})
+  },
   batchId: input.system?.nowIso || new Date().toISOString(),
   netsuite: {
     customerInternalId: wfArguments.customerID,

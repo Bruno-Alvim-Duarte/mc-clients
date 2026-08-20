@@ -161,7 +161,7 @@ const inventoryShortageDetails = (resolved.inventoryShortages || []).map(line =>
 
 if (!resolved.hasAllItems) {
   validationErrors.push(
-    `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then configured exceptions, then the automatic SKU translation.`
+    `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then the base SKU, then base SKU + M, then configured exceptions.`
   );
 }
 

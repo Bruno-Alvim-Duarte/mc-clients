@@ -141,7 +141,7 @@ Sample file:
 - The sample report total `16311.96` matches the sum of the report lines, which confirms the parser should reconcile row totals back to the header total.
 - `Order / ItemPrice / Principal` should map to Accounts Receivable because invoices already exist for the sales; the Journal Entry lets accounting clear or reconcile the amount rather than count revenue twice.
 - Amazon tax lines need special handling. Amazon records tax collected and then records withheld tax because Amazon handles the tax. These should normally net to zero.
-- Tax should be validated with a compound key such as `amount-type = ItemPrice` plus `amount-description = Tax`, paired against related `ItemWithheldTax`. If tax and withheld tax do not net to zero, the workflow should skip that settlement, save failure state, and alert.
+- Tax should be validated with a compound key such as `amount-type = ItemPrice` plus `amount-description = Tax`, paired against related `ItemWithheldTax`. If tax and withheld tax do not net to zero, route only the net variance to Amazon Selling Fees `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`.
 - Refunds are category-simple: anything with `transaction-type` beginning with `Refund` should go to the Refunds category. Negative refunds should post normally, and positive refund corrections should also remain in Refunds.
 - Storage fees are rare but should be identified by descriptions such as storage, inbound placement, and AWD storage/processing/transportation.
 - Fulfillment fees should be identified by descriptions such as fulfillment, shipping, per-unit fulfillment, customer return fulfillment fees, and removal order fees.

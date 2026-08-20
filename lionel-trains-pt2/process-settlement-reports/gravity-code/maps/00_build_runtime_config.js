@@ -60,8 +60,9 @@ const config = {
   cutoffDate: workflowArguments.amazonSettlementCutoffDate || "2026-01-01T00:00:00.000Z",
   errorRecipients: [
     "bruno@mindcloud.co",
-    //"AMiller@lionel.com",
-    //"jjones@lionel.com"
+    "AMiller@lionel.com",
+    "jjones@lionel.com",
+    workflowArguments.storePersonEmail
   ].join(", "),
   netsuite: {
     subsidiaryId: "3",
@@ -80,15 +81,19 @@ const config = {
       amazonFulfillmentFees: "434",
       amazonStorageFee: "523",
       refunds: "260",
+      settlementVarianceFees: "336",
     },
+    taxVarianceDepartmentId: "34",
     // Sandbox File Cabinet folder. Replace via workflow argument or update here before production.
-    fileCabinetFolderId: Number(workflowArguments.amazonSettlementFileCabinetFolderId || 672659)
+    fileCabinetFolderId: 701790
   },
   behavior: {
     allowCatchAllBySign: true,
     recordTaxLines: false,
-    failWhenTaxDoesNotNetToZero: true,
+    routeTaxVarianceToFeeAccount: true,
+    failWhenTaxDoesNotNetToZero: false,
     moneyTolerance: 0.01,
+    journalEntryRoundingTolerance: 0.05,
     saveSuccessfulSettlementsInMemory: false,
     saveFailedSettlementsInMemory: true
   },

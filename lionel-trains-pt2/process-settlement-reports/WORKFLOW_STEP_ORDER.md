@@ -231,7 +231,7 @@ Recommended behavior:
 
 ## Values To Replace Before Go-Live
 
-- Do not add `amazonSettlementTaxAccountId`; tax is validation-only and must not be posted.
+- Do not add `amazonSettlementTaxAccountId`; tax rows are not posted individually. Non-zero tax net variances route to fee account `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`.
 - Do not add `amazonSettlementBalancingAccountId`; Cash account `1113` is the clearing line.
 - Sandbox File Cabinet folder ID `701790` in `gravity-code/maps/00_build_runtime_config.js`, or pass `amazonSettlementFileCabinetFolderId` as a workflow argument
 - Placeholder Gravity step keys inside each code file after Cloudy creates the actual steps

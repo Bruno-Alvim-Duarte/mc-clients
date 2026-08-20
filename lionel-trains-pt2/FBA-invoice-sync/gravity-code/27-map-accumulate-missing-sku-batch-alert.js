@@ -44,6 +44,46 @@ if (!Array.isArray(batch.orderIds)) {
 
 const seenOrderIds = new Set(batch.orderIds.map(id => String(id || '').trim()).filter(Boolean));
 
+function inferSkuMatchStrategy(detail, amazonSku, netsuiteSearchSku) {
+  const explicit = String(detail.skuMatchStrategy || '').trim();
+  if (explicit) return explicit;
+
+  const attempts = Array.isArray(detail.skuSearchAttempts) ? detail.skuSearchAttempts : [];
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const strategy = String(attempts[i]?.strategy || '').trim();
+    if (strategy) return strategy;
+  }
+
+  if (amazonSku && netsuiteSearchSku && amazonSku === netsuiteSearchSku) return 'exact';
+  if (netsuiteSearchSku) return 'not_captured';
+  return '';
+}
+
+function normalizeSkuSearchAttempts(detail, fallbackSku) {
+  const attempts = Array.isArray(detail.skuSearchAttempts) ? detail.skuSearchAttempts : [];
+  const normalized = attempts
+    .filter(attempt => attempt && typeof attempt === 'object')
+    .map(attempt => ({
+      strategy: String(attempt.strategy || 'search').trim(),
+      sku: String(attempt.sku || '').trim(),
+      resultCount: Number(attempt.resultCount || 0) || 0
+    }))
+    .filter(attempt => attempt.sku);
+
+  if (normalized.length) return normalized;
+
+  const amazonSku = String(detail.amazonSku || '').trim();
+  const netsuiteSearchSku = String(detail.netsuiteSearchSku || fallbackSku || '').trim();
+  const sku = netsuiteSearchSku || amazonSku;
+  if (!sku) return [];
+
+  return [{
+    strategy: inferSkuMatchStrategy(detail, amazonSku, netsuiteSearchSku),
+    sku,
+    resultCount: 0
+  }];
+}
+
 for (const detail of missingSkuDetails) {
   const sku = String(detail.sku || '').trim();
   const amazonOrderId = String(detail.amazonOrderId || payload.amazonOrderId || '').trim();
@@ -72,7 +112,7 @@ for (const detail of missingSkuDetails) {
     detail.quantity || 0
   ].join('|');
 
-  const alreadyExists = batch.skus[sku].orders.some(order =>
+  const existingOrder = batch.skus[sku].orders.find(order =>
     [
       order.amazonOrderId,
       order.amazonOrderItemId || '',
@@ -80,14 +120,25 @@ for (const detail of missingSkuDetails) {
     ].join('|') === orderKey
   );
 
-  if (!alreadyExists) {
+  const netsuiteSearchSku = detail.netsuiteSearchSku || sku;
+  const skuMatchStrategy = inferSkuMatchStrategy(detail, amazonSku, netsuiteSearchSku);
+  const skuSearchAttempts = normalizeSkuSearchAttempts(detail, sku);
+
+  if (existingOrder) {
+    if (!existingOrder.netsuiteSearchSku) existingOrder.netsuiteSearchSku = netsuiteSearchSku;
+    if (!existingOrder.skuMatchStrategy && skuMatchStrategy) existingOrder.skuMatchStrategy = skuMatchStrategy;
+    if ((!Array.isArray(existingOrder.skuSearchAttempts) || !existingOrder.skuSearchAttempts.length) && skuSearchAttempts.length) {
+      existingOrder.skuSearchAttempts = skuSearchAttempts;
+    }
+  }
+  else {
     batch.skus[sku].orders.push({
       amazonOrderId,
       amazonOrderItemId: detail.amazonOrderItemId || '',
       amazonSku,
-      netsuiteSearchSku: detail.netsuiteSearchSku || sku,
-      skuMatchStrategy: detail.skuMatchStrategy || '',
-      skuSearchAttempts: detail.skuSearchAttempts || [],
+      netsuiteSearchSku,
+      skuMatchStrategy,
+      skuSearchAttempts,
       title: detail.title || '',
       asin: detail.asin || '',
       quantity: Number(detail.quantity || 0) || 0,
@@ -135,7 +186,7 @@ for (const detail of inventoryShortageDetails) {
     detail.shortageQuantity || 0
   ].join('|');
 
-  const alreadyExists = batch.inventoryShortages[shortageKey].orders.some(order =>
+  const existingOrder = batch.inventoryShortages[shortageKey].orders.find(order =>
     [
       order.amazonOrderId,
       order.requiredQuantity || 0,
@@ -144,13 +195,24 @@ for (const detail of inventoryShortageDetails) {
     ].join('|') === orderKey
   );
 
-  if (!alreadyExists) {
+  const netsuiteSearchSku = detail.netsuiteSearchSku || sku;
+  const skuMatchStrategy = inferSkuMatchStrategy(detail, detail.amazonSku || '', netsuiteSearchSku);
+  const skuSearchAttempts = normalizeSkuSearchAttempts(detail, sku);
+
+  if (existingOrder) {
+    if (!existingOrder.netsuiteSearchSku) existingOrder.netsuiteSearchSku = netsuiteSearchSku;
+    if (!existingOrder.skuMatchStrategy && skuMatchStrategy) existingOrder.skuMatchStrategy = skuMatchStrategy;
+    if ((!Array.isArray(existingOrder.skuSearchAttempts) || !existingOrder.skuSearchAttempts.length) && skuSearchAttempts.length) {
+      existingOrder.skuSearchAttempts = skuSearchAttempts;
+    }
+  }
+  else {
     batch.inventoryShortages[shortageKey].orders.push({
       amazonOrderId,
       amazonSku: detail.amazonSku || '',
-      netsuiteSearchSku: detail.netsuiteSearchSku || sku,
-      skuMatchStrategy: detail.skuMatchStrategy || '',
-      skuSearchAttempts: detail.skuSearchAttempts || [],
+      netsuiteSearchSku,
+      skuMatchStrategy,
+      skuSearchAttempts,
       requiredQuantity: Number(detail.requiredQuantity || 0) || 0,
       availableQuantity: Number(detail.availableQuantity || 0) || 0,
       shortageQuantity: Number(detail.shortageQuantity || 0) || 0,

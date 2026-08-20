@@ -175,8 +175,19 @@ function pushLine(lines, line) {
   if (line) lines.push(line);
 }
 
+function lineFieldsForCategory(category, commonLineFields) {
+  return {
+    ...commonLineFields,
+    ...(category.departmentId ? { department: { id: String(category.departmentId) } } : {}),
+    ...(category.classId ? { class: { id: String(category.classId) } } : {}),
+    ...(category.locationId ? { location: { id: String(category.locationId) } } : {}),
+    ...(category.divisionId ? { division: { id: String(category.divisionId) } } : {})
+  };
+}
+
 function addCategoryLines(lines, category, commonLineFields) {
   const memoBase = `${settlement.memo} - ${category.category}`;
+  const categoryLineFields = lineFieldsForCategory(category, commonLineFields);
 
   pushLine(
     lines,
@@ -184,7 +195,7 @@ function addCategoryLines(lines, category, commonLineFields) {
       category.accountId,
       category.positiveAmount,
       `${memoBase} positive`,
-      commonLineFields
+      categoryLineFields
     )
   );
 
@@ -194,7 +205,7 @@ function addCategoryLines(lines, category, commonLineFields) {
       category.accountId,
       category.negativeAmount,
       `${memoBase} negative`,
-      commonLineFields
+      categoryLineFields
     )
   );
 }
