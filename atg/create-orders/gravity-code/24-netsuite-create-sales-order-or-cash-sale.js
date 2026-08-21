@@ -284,6 +284,7 @@ try {
       throw new Error('Order ' + order.legacyResourceId + ' with no customer — unable to create record.');
     }
 
+    // Fase 1: busca com filtro de subsidiary (fast path — cobre 99% dos casos)
     var custSearch = search.create({
       type: search.Type.CUSTOMER,
       filters: [
@@ -296,11 +297,36 @@ try {
       columns: ['internalid']
     }).run().getRange({ start: 0, end: 1 });
 
-    if (custSearch.length === 0) {
-      throw new Error('Customer not found in NetSuite for Shopify ID ' + shopifyCustomerId + ' — run customer sync step first.');
-    }
+    if (custSearch.length > 0) {
+      customerInternalId = custSearch[0].getValue({ name: 'internalid' });
+    } else {
+      // Fase 2: fallback — busca sem filtro de subsidiary.
+      // Cobre o caso em que o arquivo 24 falhou em adicionar a subsidiary (ex: feature desabilitada,
+      // erro de permissão, ou primeira ordem cross-subsidiary antes do sync rodar).
+      var globalCustSearch = search.create({
+        type: search.Type.CUSTOMER,
+        filters: [
+          ['custentity_celigo_etail_cust_id', search.Operator.IS, shopifyCustomerId],
+          'AND',
+          ['isinactive', search.Operator.IS, 'F']
+        ],
+        columns: ['internalid']
+      }).run().getRange({ start: 0, end: 1 });
 
-    customerInternalId = custSearch[0].getValue({ name: 'internalid' });
+      if (globalCustSearch.length === 0) {
+        throw new Error('Customer not found in NetSuite for Shopify ID ' + shopifyCustomerId + ' — run customer sync step first.');
+      }
+
+      // Customer encontrado em outra subsidiary — cria o vínculo com a subsidiary atual
+      // Requer feature "Multi-Subsidiary Customer" ativa em NS > Setup > Company > Enable Features
+      var crossSubCustId = globalCustSearch[0].getValue({ name: 'internalid' });
+      var csrRec = record.create({ type: record.Type.CUSTOMER_SUBSIDIARY_RELATIONSHIP });
+      csrRec.setValue({ fieldId: 'entity',     value: crossSubCustId });
+      csrRec.setValue({ fieldId: 'subsidiary', value: C.SUBSIDIARY_ID });
+      csrRec.save();
+
+      customerInternalId = crossSubCustId;
+    }
   }
 
   var legacyId     = order.legacyResourceId;
@@ -319,11 +345,11 @@ try {
   var fulfillments = order.fulfillments    || [];
   var tagsStr      = Array.isArray(order.tags) ? order.tags.join(', ') : (order.tags || '');
 
-  if (order.displayFinancialStatus !== 'PAID') {
-    throw new Error(
-      'Order ' + legacyId + ' Ignored — Financial status: ' + order.displayFinancialStatus
-    );
-  }
+  // if (order.displayFinancialStatus !== 'PAID') {
+  //   throw new Error(
+  //     'Order ' + legacyId + ' Ignored — Financial status: ' + order.displayFinancialStatus
+  //   );
+  // }
 
   // --- Idempotência --- //
   var existing = [];
@@ -584,18 +610,20 @@ try {
     txRecord.setValue({ fieldId: 'billphone',     value: billingAddr.phone         || '' });
     txRecord.setValue({ fieldId: 'billcountry',   value: billingAddr.countryCodeV2 || '' });
 
-    // shipoverride: true — desvincula o ship-to do address book do customer.
-    // Sem isso, o NS usa o endereço padrão do customer (da primeira ordem) em vez do endereço do pedido atual.
-    txRecord.setValue({ fieldId: 'shipoverride',  value: true });
-    txRecord.setValue({ fieldId: 'shipaddressee', value: shippingAddr.name          || '' });
-    txRecord.setValue({ fieldId: 'shipattn',      value: shippingAddr.company       || '' });
-    txRecord.setValue({ fieldId: 'shipaddr1',     value: shippingAddr.address1      || '' });
-    txRecord.setValue({ fieldId: 'shipaddr2',     value: shippingAddr.address2      || '' });
-    txRecord.setValue({ fieldId: 'shipcity',      value: shippingAddr.city          || '' });
-    txRecord.setValue({ fieldId: 'shipstate',     value: shippingAddr.provinceCode  || '' });
-    txRecord.setValue({ fieldId: 'shipzip',       value: shippingAddr.zip           || '' });
-    txRecord.setValue({ fieldId: 'shipphone',     value: shippingAddr.phone         || '' });
-    txRecord.setValue({ fieldId: 'shipcountry',   value: shippingAddr.countryCodeV2 || '' });
+    // Abordagem via subrecord — única forma confiável de sobrescrever o ship-to independente do customer.
+    // shipoverride: true + setValue nos campos ship* não funciona: o NS ainda resolve o endereço
+    // a partir do subrecord vinculado ao address book do customer ao salvar o record.
+    txRecord.setValue({ fieldId: 'shipoverride', value: true });
+    var shipSub = txRecord.getSubrecord({ fieldId: 'shippingaddress' });
+    shipSub.setValue({ fieldId: 'addressee', value: shippingAddr.name          || '' });
+    shipSub.setValue({ fieldId: 'attention', value: shippingAddr.company       || '' });
+    shipSub.setValue({ fieldId: 'addr1',     value: shippingAddr.address1      || '' });
+    shipSub.setValue({ fieldId: 'addr2',     value: shippingAddr.address2      || '' });
+    shipSub.setValue({ fieldId: 'city',      value: shippingAddr.city          || '' });
+    shipSub.setValue({ fieldId: 'state',     value: shippingAddr.provinceCode  || '' });
+    shipSub.setValue({ fieldId: 'zip',       value: shippingAddr.zip           || '' });
+    shipSub.setValue({ fieldId: 'addrphone', value: shippingAddr.phone         || '' });
+    shipSub.setValue({ fieldId: 'country',   value: shippingAddr.countryCodeV2 || '' });
 
     if (order.note) txRecord.setValue({ fieldId: 'message', value: order.note });
 

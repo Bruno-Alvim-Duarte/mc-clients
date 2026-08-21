@@ -88,6 +88,14 @@ steps:
       const checkpoint = state.checkpoint || {};
       const updatedAfter = checkpoint.lastUpdatedAfter || '2026-05-01T00:00:00';
       const wfArguments = input["workflowArguments"]
+      const defaultSkuTranslationExceptions = {
+        '203-stickerless': '203',
+        '203Merchant Barcode': '203',
+        '424': '424E',
+        '470AF': '470',
+        '489': '489E',
+        'YZ-O27H-G3TU': '811'
+      };
 
       return [{
         workflowName: 'Amazon FBA to NetSuite - FBA Invoice Sync',
@@ -104,7 +112,10 @@ steps:
         checkpointKey: state.keys?.checkpointKey || 'lionel_fba_invoice_sync_checkpoint',
         retryQueueKey: state.keys?.retryQueueKey || 'lionel_fba_invoice_retry_orders',
         missingSkuBatchAlertKey: 'lionel_fba_invoice_missing_sku_batch_alert',
-        skuTranslationExceptions: wfArguments.skuTranslationExceptions || {},
+        skuTranslationExceptions: {
+          ...defaultSkuTranslationExceptions,
+          ...(wfArguments.skuTranslationExceptions || {})
+        },
         batchId: input.system?.nowIso || new Date().toISOString(),
         netsuite: {
           customerInternalId: wfArguments.customerID,
@@ -632,7 +643,7 @@ steps:
                       
                       if (!resolved.hasAllItems) {
                         validationErrors.push(
-                          `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then configured exceptions, then the base SKU, then base SKU + M.`
+                          `Missing NetSuite item SKUs: ${(resolved.missingSkus || []).join(', ') || 'none'}; duplicate NetSuite item SKUs: ${(resolved.duplicateSkus || []).join(', ') || 'none'}. The resolver first searches the exact Amazon SKU, then the base SKU, then base SKU + M, then configured exceptions.`
                         );
                       }
                       

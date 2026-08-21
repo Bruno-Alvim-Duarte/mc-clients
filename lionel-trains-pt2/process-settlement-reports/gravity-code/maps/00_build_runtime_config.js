@@ -76,7 +76,7 @@ const config = {
     },
     accountIds: {
       accountsReceivable: "123",
-      cash: "1113", // DIFFERENT IN PRODUCTION ⚠️⚠️
+      cash: "1121",
       amazonSellingFees: "336",
       amazonFulfillmentFees: "434",
       amazonStorageFee: "523",

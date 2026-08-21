@@ -5,7 +5,9 @@ const wfArguments = input["workflowArguments"]
 const defaultSkuTranslationExceptions = {
   '203-stickerless': '203',
   '203Merchant Barcode': '203',
+  '424': '424E',
   '470AF': '470',
+  '489': '489E',
   'YZ-O27H-G3TU': '811'
 };
 
