@@ -3,7 +3,7 @@
 Status: Not ready
 
 Summary:
-MC-21983 defines an hourly one-way sync that creates Viewpoint Spectrum AR Customer Invoices from posted ServiceTitan invoices, then marks the source invoice as exported. The high-level flow, most core fields, regular-invoice versus credit-memo rule, and prerequisite dependencies are identified. The workflow is not build-ready because the complete Spectrum payload, invoice idempotency, Business Unit/Job cost-center rules, line-level tax and credit-memo treatment, incremental checkpoint, and operational exception decisions are still open.
+MC-21983 defines an hourly, create-only one-way sync that creates Viewpoint Spectrum AR Customer Invoices from eligible ServiceTitan invoices, then marks the source invoice as exported. Eligible invoices are in `Posted` status and have an invoice date on or after August 1. Changes, voids, and credits after export are explicitly outside this workflow's scope. The ServiceTitan invoice ID is the idempotency key and Gravity's existing query handles the duplicate lookup. The workflow is not build-ready because the complete Spectrum payload, Business Unit/Job cost-center rules, line-level tax and credit-memo treatment, incremental checkpoint, and operational exception decisions are still open.
 
 ## Confirmed Understanding
 
@@ -13,29 +13,16 @@ MC-21983 defines an hourly one-way sync that creates Viewpoint Spectrum AR Custo
 - Destination record: Spectrum AR Customer Invoice created through `AddARInvoice`.
 - Direction: One-way, ServiceTitan to Spectrum, followed by a ServiceTitan status/write-back that marks the invoice exported only after the Spectrum creation succeeds.
 - Trigger/cadence: Scheduled polling every hour.
-- Incremental/backfill scope: Incremental processing is intended for new invoices. Historical backfill scope and checkpoint behavior are not defined.
+- Incremental/backfill scope: Read `Posted` invoices with an invoice date on or after August 1. Historical backfill execution and checkpoint behavior are not defined.
+
+## Confirmed Decisions
+
+- Source eligibility: Each hourly run reads only ServiceTitan invoices in `Posted` status with an invoice date on or after August 1. Invoices already marked as exported are not processed again.
+- Post-export lifecycle: This is a create-only workflow. If an exported ServiceTitan invoice is later changed, voided, or credited, the change is outside the scope of this workflow. The integration must not update the original Spectrum invoice or create a Spectrum credit memo.
+- Idempotency: The ServiceTitan invoice ID is the stable cross-system key for the same invoice. The [ServiceTitan Invoices Get List endpoint](https://developer.servicetitan.io/docs/apis/tenant-accounting-v2/endpoints/Invoices_GetList) returns this `id` in each invoice response and supports filtering by invoice IDs through its `ids` parameter. Before `AddARInvoice`, Gravity searches only with this cross-system key. If it finds an existing invoice, the workflow skips the record; it does not perform an additional validation or an ambiguous-match check using the invoice number.
+- GL account handling: `GL_Account` is optional in both systems. When ServiceTitan `items[].glAccount` is blank, leave Spectrum `GL_Account` blank; this does not block invoice creation. When populated, use the ServiceTitan value as-is to look up and apply the matching Spectrum `GL_Account`, with no formatting or value translation.
 
 ## Blocking Questions
-
-### Invoice Eligibility and Lifecycle
-
-1. Please confirm the exact ServiceTitan query for each hourly run: does it include only invoices in `Posted` status that have not already been exported, and what go-live invoice-date cutoff should apply?
-   Why it matters: The issue says “new invoices,” while the source status and cutoff determine which records are safe to process and prevent historical invoices from entering unintentionally.
-   Implementation impact: Gravity needs an explicit source filter before pagination; invoices with no line items should be excluded or logged as specified.
-
-2. After an invoice has been exported, can it ever be changed, voided, or credited in ServiceTitan? If so, should the change create a Spectrum credit memo, update the original invoice, or be handled outside this workflow?
-   Why it matters: Marking an invoice exported may make it non-editable, but the expected accounting handling for post-export corrections is not stated.
-   Implementation impact: This determines whether the workflow is create-only or must recognize later lifecycle events without creating duplicate AR activity.
-
-### Matching and Duplicate Prevention
-
-1. What is the approved idempotency key for the same ServiceTitan invoice, and which Spectrum lookup must occur before calling `AddARInvoice`? Please confirm whether the stable key is ServiceTitan invoice ID, `number`, a Spectrum `GUID`, or a defined combination including `Company_Code` and `Batch_Code`.
-   Why it matters: Spectrum requires a unique invoice number, but an API timeout or a failure after Spectrum accepts the invoice can otherwise cause an hourly retry to create a duplicate.
-   Implementation impact: Gravity needs a deterministic search/create-or-skip path and must only mark the source exported after the target result is confirmed.
-
-2. What should happen when the invoice number already exists in Spectrum but cannot be conclusively matched to the same ServiceTitan invoice?
-   Why it matters: Reusing or matching the wrong invoice number creates an AR reconciliation risk.
-   Implementation impact: Ambiguous matches should stop automatic creation, log the ServiceTitan and Spectrum identifiers, and notify an owner rather than being auto-resolved.
 
 ### Required Header Values and Dependencies
 
@@ -43,17 +30,17 @@ MC-21983 defines an hourly one-way sync that creates Viewpoint Spectrum AR Custo
    Why it matters: `Company_Code` is required by `AddARInvoice` but is not included in the issue field map.
    Implementation impact: This is a required header value for every request and belongs in the approved mapping/configuration.
 
-2. Please provide the approved Business Unit-to-Spectrum `Income_Cost_Center` mapping. The project context identifies service cost centers `1002` (NC), `2002` (SC), and `3002` (GA), but does not identify the ServiceTitan values that select them.
-   Why it matters: The issue requires a client-provided mapping; the available cost-center list alone cannot select the correct value.
+2. Please provide the approved ServiceTitan Business Unit-to-Spectrum `Income_Cost_Center` mapping, including the behavior when the Business Unit is blank or unmapped.
+   Why it matters: The issue requires a client-provided mapping; the source Business Unit alone does not define the correct Spectrum cost center.
    Implementation impact: Gravity needs a maintained lookup and a defined skip-or-fail outcome when a Business Unit is blank or unmapped.
 
 3. For a ServiceTitan invoice linked to a project/job, should the Spectrum cost center come from the linked Job’s Spectrum cost center, the ServiceTitan Business Unit mapping, or a precedence rule between both? Please confirm the intended header/detail placement as well.
    Why it matters: The issue names both Job and Business Unit, while the referenced Spectrum/Agave guidance indicates project invoices may use the linked Job cost center.
    Implementation impact: The map step and payload must apply one approved rule; conflicting cost-center sources should not be silently chosen.
 
-4. Are `batchNumber` values always present, within Spectrum’s allowed length, and already valid as Spectrum `Batch_Code` values? If not, what approved batch-code derivation or fallback should be used?
+4. ServiceTitan `batchNumber` is optional. What should the workflow use for Spectrum `Batch_Code` when `batchNumber` is blank: an approved default/derived value, or a record-specific skip-and-notify path?
    Why it matters: `Batch_Code` is required by Spectrum and affects AR grouping and reconciliation.
-   Implementation impact: The workflow needs validation before the write and a safe exception path for invalid batches.
+   Implementation impact: The map step needs a defined fallback or validation branch before the Spectrum write.
 
 5. Please provide the approved `taxZoneId` to Spectrum `Sales_Tax_Code` mapping, including tax-exempt, blank, and unmapped values.
    Why it matters: The issue requires tax-code validation but supplies no client mapping; the code also determines Spectrum’s tax treatment.
@@ -69,11 +56,7 @@ MC-21983 defines an hourly one-way sync that creates Viewpoint Spectrum AR Custo
    Why it matters: Spectrum requires positive line and sales-tax amounts even when the transaction is a credit memo.
    Implementation impact: The workflow must normalize signs and validate that the header/line totals reconcile before submission.
 
-3. What should happen when a required GL account is blank, unmapped, or not valid in Spectrum? Please provide the approved ServiceTitan pricebook/`items[].glAccount` to Spectrum `GL_Account` mapping or confirm that the values match exactly, including formatting such as removal of dashes if required.
-   Why it matters: A GL account is necessary to record revenue correctly; the project contains a chart of accounts but not an approved item-level mapping in the issue.
-   Implementation impact: An unmapped line must prevent an incorrect invoice from being created; this requires a validation branch before `AddARInvoice`.
-
-4. What is the approved behavior when mapped values exceed Spectrum field limits, especially `number` / `Invoice_Or_Transaction` (10 characters), `summary` / `Remarks` (65), `items[].description` / `Detail_Description` (30), and GL account codes (12)?
+3. What is the approved behavior when mapped values exceed Spectrum field limits, especially `number` / `Invoice_Or_Transaction` (10 characters), `summary` / `Remarks` (65), `items[].description` / `Detail_Description` (30), and GL account codes (12)?
    Why it matters: The issue mentions truncating remarks if necessary but does not define treatment for other constrained fields or the preservation of invoice uniqueness.
    Implementation impact: The integration needs approved normalization or a record-specific exception; it must not silently make an invoice number non-unique.
 
@@ -113,17 +96,19 @@ MC-21983 defines an hourly one-way sync that creates Viewpoint Spectrum AR Custo
 
 ## Suggested Assumptions To Confirm
 
-- If no different instruction is provided, assume only posted, not-yet-exported ServiceTitan invoices with at least one line item and a post-go-live invoice date are eligible.
-- If no different instruction is provided, assume each ServiceTitan invoice is create-only in Spectrum; corrections after export require an approved credit-memo or separate accounting process.
+- Only `Posted`, not-yet-exported ServiceTitan invoices with an invoice date on or after August 1 are eligible. The behavior for invoices with no line items remains to be confirmed.
+- The workflow is confirmed as create-only in Spectrum. Corrections, voids, and credits after export are outside its scope and do not trigger a Spectrum update or credit memo.
 - If no different instruction is provided, assume invoice-specific validation failures are logged, emailed, and skipped so unrelated invoices continue; authentication, source-query, and Spectrum-wide configuration failures stop the workflow.
 - If no different instruction is provided, assume Gravity uses a scheduled, paginated read and a composite checkpoint stored in memory only after the invoice reaches a safe, reconciled outcome.
 
 ## Build-Readiness Checklist
 
-- [ ] Eligibility filters, post-export lifecycle, and go-live cutoff are confirmed.
-- [ ] Idempotency key, Spectrum lookup, and duplicate-recovery behavior are confirmed.
+- [x] Eligibility filters and go-live cutoff are confirmed.
+- [x] Post-export lifecycle is confirmed as out of scope.
+- [x] ServiceTitan invoice ID, Gravity lookup, and duplicate-prevention behavior are confirmed.
 - [ ] `Company_Code`, batch behavior, customer/job dependencies, and Business Unit/Job cost-center precedence are confirmed.
-- [ ] Tax-code, GL-account, line-item, discount, credit-memo, and field-length mappings are approved.
+- [x] Optional GL account handling and exact-value Spectrum lookup are confirmed.
+- [ ] Tax-code, line-item, discount, credit-memo, and field-length mappings are approved.
 - [ ] Tax allocation and total-reconciliation rules for multi-line invoices are confirmed.
 - [ ] Pagination, composite checkpoint, backfill scope, and run-volume limits are confirmed.
 - [ ] Record-level versus systemic failure behavior, retries, logs, and failure-email recipients are confirmed.
