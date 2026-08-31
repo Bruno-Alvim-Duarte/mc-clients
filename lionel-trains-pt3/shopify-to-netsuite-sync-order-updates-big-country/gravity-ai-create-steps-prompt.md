@@ -191,7 +191,7 @@ Create the following steps in this exact order.
 - Purpose:
   - For edits: update shipping address, item quantities/rates/locations, added lines, cancelled lines with quantity 0, and discount line/percent.
   - For edit notes: append target descriptionNotes[] into the affected item line description using " - " as the separator, preserving existing notes and avoiding duplicates.
-  - For cancellation: set Sales Order orderstatus = C / Cancelled and append cancellation memo note.
+  - For cancellation: close all open Sales Order item lines and append cancellation memo note.
 - Step Completion Option / Flow Control:
   - On failure: Stop Workflow
   - Log level: Error

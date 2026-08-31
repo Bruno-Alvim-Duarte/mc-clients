@@ -187,12 +187,12 @@ Important observations:
 
 15. When Shopify cancels an order, should the workflow close item lines or move the NetSuite Sales Order status to Cancelled?
     Why it matters: closing all lines can produce a Closed-style state, while the desired business outcome is that the Sales Order itself is Cancelled.
-    Implementation impact: the NetSuite SuiteScript should set Sales Order `orderstatus = C` after eligibility validation.
+    Implementation impact: the NetSuite SuiteScript should close all open Sales Order item lines after eligibility validation.
 
     A: The validation of fulfilled should happen before processing the cancelation. But we should close the sales order on netsuite after the fulfilled validation and that's it.
 
     Follow-up answer:
-    Cancellation means move the Sales Order status to `Cancelled` (`orderstatus = C`), not merely close item lines.
+    Cancellation means make the Sales Order non-fulfillable by closing its open item lines and recording the Shopify cancellation in the memo.
 
 16. Should the workflow write Shopify cancellation reason/date/staff note into a NetSuite field or memo?
     Why it matters: cancellation details are useful for audit and operations.
