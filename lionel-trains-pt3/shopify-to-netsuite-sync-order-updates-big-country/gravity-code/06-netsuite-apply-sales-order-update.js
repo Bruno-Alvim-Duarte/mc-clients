@@ -114,19 +114,41 @@ function execute() {
 
     function cancelSalesOrder() {
       const previousStatus = salesOrder.getValue({ fieldId: 'orderstatus' });
+      const lineCount = salesOrder.getLineCount({ sublistId: 'item' });
+      let closedLineCount = 0;
+      let alreadyClosedLineCount = 0;
 
-      // NetSuite Sales Order compact status code C = Cancelled.
-      // Use the header status for Shopify order cancellations instead of
-      // closing item lines, because closing all lines can produce a Closed
-      // status and does not represent the Shopify cancellation state.
-      salesOrder.setValue({
-        fieldId: 'orderstatus',
-        value: 'C',
-      });
+      for (let i = 0; i < lineCount; i++) {
+        const isClosed = salesOrder.getSublistValue({
+          sublistId: 'item',
+          fieldId: 'isclosed',
+          line: i,
+        }) === true;
+
+        if (isClosed) {
+          alreadyClosedLineCount++;
+          continue;
+        }
+
+        salesOrder.selectLine({ sublistId: 'item', line: i });
+        salesOrder.setCurrentSublistValue({
+          sublistId: 'item',
+          fieldId: 'isclosed',
+          value: true,
+          forceSyncSourcing: true,
+        });
+        salesOrder.commitLine({ sublistId: 'item' });
+        closedLineCount++;
+      }
 
       return {
         previousStatus,
-        targetStatus: 'C',
+        targetStatus: 'H',
+        targetStatusText: 'Closed',
+        method: 'close_item_lines',
+        lineCount,
+        closedLineCount,
+        alreadyClosedLineCount,
       };
     }
 

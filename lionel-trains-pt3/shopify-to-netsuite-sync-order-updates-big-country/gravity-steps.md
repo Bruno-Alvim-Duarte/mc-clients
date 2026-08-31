@@ -179,7 +179,7 @@ Expected Gravity workflow arguments:
     - Purpose:
       - Edit: update shipping address, item quantities/rates/locations, added lines, cancelled lines with quantity `0`, and discount line/percent.
       - Edit notes: append new notes to affected NetSuite item line `description` using ` - ` as the separator; preserve any description/notes already on the line.
-      - Cancellation: set Sales Order header `orderstatus = C` / Cancelled and append cancellation memo note.
+      - Cancellation: close all open Sales Order item lines and append cancellation memo note.
     - Step Completion Option:
       - Failure: Stop Workflow
       - Log level: Error
@@ -276,9 +276,9 @@ The current Gravity export has a false branch under `If - Event Is Edit` named `
    - `canApply: true`
    - `cancellation.memoNote`
 
-4. Step 12 should set the Sales Order header `orderstatus` to `C` / Cancelled and save the Sales Order.
+4. Step 12 should close all open Sales Order item lines, append the cancellation memo, and save the Sales Order.
 
-   Do not implement cancellation by closing every item line. Closing lines can move the Sales Order toward a Closed-style state and is not the desired business outcome for Shopify cancellations.
+   Do not implement cancellation by setting the Sales Order header `orderstatus` to `C`; that value can be returned by NetSuite as a compact status code but is not valid for this SuiteScript update path.
 
 Do not add a Shopify GraphQL step to the cancellation branch unless the real cancellation webhook payload is missing required fields.
 
