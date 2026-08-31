@@ -6,9 +6,9 @@ Use these files as the source snippets for the Gravity workflow `Amazon Settleme
 
 - `maps/00_build_runtime_config.js`: centralizes workflow constants, NetSuite IDs, account IDs, behavior flags, recipients, and the environment-scoped failure-array memory key.
 - `maps/01_filter_completed_settlement_reports.js`: filters Amazon report list output to completed settlement reports after the cutoff date, merges unresolved failed settlements from the environment-scoped failure key, and dedupes the loop input.
-- `maps/02_parse_settlement_report_tsv.js`: parses the downloaded tab-delimited settlement report, validates totals/tax, routes non-zero tax variance to the approved fee account, and aggregates category totals.
+- `maps/02_parse_settlement_report_tsv.js`: parses the downloaded tab-delimited settlement report, validates totals/tax, routes non-zero tax variance to the approved fee account, aggregates category totals, and preserves each order's net AR amount (including linked shipping/item promotions) for FBA invoice application.
 - `maps/03_build_financial_event_group_search_request.js`: builds the Amazon Financial Event Group date window around the settlement end date.
-- `maps/04_apply_settlement_currency_conversion.js`: matches the Financial Event Group by `fundTransferDate`, calculates Amazon's exchange rate, and converts configured source currencies such as MXN to USD.
+- `maps/04_apply_settlement_currency_conversion.js`: matches the Financial Event Group by `fundTransferDate`, calculates Amazon's exchange rate, and converts configured source currencies such as MXN to USD, including the retained per-order AR amounts.
 - `maps/05_build_journal_entry_payload.js`: builds the NetSuite Journal Entry payload and verifies that the JE balances.
 - `maps/06_build_failure_memory_payload.js`: adds or replaces the current settlement in the environment-scoped failure array for retryable settlement failures.
 - `maps/07_build_resolved_failure_memory_payload.js`: removes the current settlement from the environment-scoped failure array after a successful retry.
@@ -18,10 +18,14 @@ Use these files as the source snippets for the Gravity workflow `Amazon Settleme
 - `netsuite/01_search_existing_journal_entry.js`: searches for an existing Journal Entry by settlement external ID.
 - `netsuite/02_create_journal_entry.js`: creates the NetSuite Journal Entry.
 - `netsuite/03_attach_settlement_csv.js`: saves the settlement file to File Cabinet and attaches it to the Journal Entry.
+- `netsuite/04_apply_fba_invoices.js`: for a converted settlement, first changes each matched untouched FBA invoice from its source amount to Amazon's actual USD amount, then creates a zero-dollar Customer Payment that applies the settlement JE's AR credit.
 
 ## Required Replacements Before Production
 
 - Pass `amazonSettlementFailureStoreName` or `amazonSettlementKvStoreName` as a workflow argument so failure retries use `{camelCaseStoreName}_amazon_settlement_failures` instead of a cross-environment key.
+- Pass `journalEntryLineEntityId` as a workflow argument for each store when Journal Entry lines must populate the NetSuite **Name** field. Its value must be the internal ID of the applicable NetSuite entity (for example, Customer or Vendor). If omitted, Name remains blank.
+- Pass `fbaInvoiceCustomerInternalId` as the store's NetSuite Amazon Customer internal ID before enabling FBA invoice application. It can be omitted only when `journalEntryLineEntityId` already contains that same Customer ID.
+- For converted settlements, FBA Invoice Sync invoices must still be open and have a total equal to the source AR amount. The application step scales each item rate and shipping cost with Amazon's actual settlement exchange rate, validates the resulting USD invoice amount, and then pays it. It deliberately stops if the invoice was partially applied or differs from both the source and converted amount.
 - Do not configure a tax account. Tax rows are not posted individually; if tax and withheld tax do not net to zero, route only the net variance to fee account `8606` / NetSuite internal ID `336`, Department `300` / NetSuite internal ID `34`.
 - Do not configure a clearing/balancing account. Cash account `1113` is the clearing line, using the settlement header `total-amount`.
 - Replace sandbox File Cabinet folder ID `701790` in `maps/00_build_runtime_config.js`, or pass `amazonSettlementFileCabinetFolderId` as a workflow argument before go-live.

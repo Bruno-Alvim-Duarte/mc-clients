@@ -3,7 +3,7 @@
 Status: Not ready
 
 Summary:
-MC-21983 defines an hourly, create-only one-way sync that creates Viewpoint Spectrum AR Customer Invoices from eligible ServiceTitan invoices, then marks the source invoice as exported. Eligible invoices are in `Posted` status and have an invoice date on or after August 1. Changes, voids, and credits after export are explicitly outside this workflow's scope. The ServiceTitan invoice ID is the idempotency key and Gravity's existing query handles the duplicate lookup. The workflow is not build-ready because the complete Spectrum payload, Business Unit/Job cost-center rules, line-level tax and credit-memo treatment, incremental checkpoint, and operational exception decisions are still open.
+MC-21983 defines an hourly, create-only one-way sync that creates Viewpoint Spectrum AR Customer Invoices from eligible ServiceTitan invoices, then marks the source invoice as exported. Eligible invoices are in `Posted` status and have an invoice date on or after August 1. Changes, voids, and credits after export are explicitly outside this workflow's scope. The batch fallback, cost-center source, checkpoint, backfill, retry recovery, and operational assumptions are now defined. The workflow is not build-ready because the actual company value, Business Unit/GL mappings, Spectrum tax code for `In-House Sales`, and complete invoice payload rules are still open.
 
 ## Confirmed Understanding
 
@@ -13,38 +13,46 @@ MC-21983 defines an hourly, create-only one-way sync that creates Viewpoint Spec
 - Destination record: Spectrum AR Customer Invoice created through `AddARInvoice`.
 - Direction: One-way, ServiceTitan to Spectrum, followed by a ServiceTitan status/write-back that marks the invoice exported only after the Spectrum creation succeeds.
 - Trigger/cadence: Scheduled polling every hour.
-- Incremental/backfill scope: Read `Posted` invoices with an invoice date on or after August 1. Historical backfill execution and checkpoint behavior are not defined.
+- Incremental/backfill scope: Read `Posted` invoices with an invoice date on or after August 1. Run the initial backfill from August 1, then continue with the hourly incremental workflow.
 
 ## Confirmed Decisions
 
 - Source eligibility: Each hourly run reads only ServiceTitan invoices in `Posted` status with an invoice date on or after August 1. Invoices already marked as exported are not processed again.
 - Post-export lifecycle: This is a create-only workflow. If an exported ServiceTitan invoice is later changed, voided, or credited, the change is outside the scope of this workflow. The integration must not update the original Spectrum invoice or create a Spectrum credit memo.
 - Idempotency: The ServiceTitan invoice ID is the stable cross-system key for the same invoice. The [ServiceTitan Invoices Get List endpoint](https://developer.servicetitan.io/docs/apis/tenant-accounting-v2/endpoints/Invoices_GetList) returns this `id` in each invoice response and supports filtering by invoice IDs through its `ids` parameter. Before `AddARInvoice`, Gravity searches only with this cross-system key. If it finds an existing invoice, the workflow skips the record; it does not perform an additional validation or an ambiguous-match check using the invoice number.
-- GL account handling: `GL_Account` is optional in both systems. When ServiceTitan `items[].glAccount` is blank, leave Spectrum `GL_Account` blank; this does not block invoice creation. When populated, use the ServiceTitan value as-is to look up and apply the matching Spectrum `GL_Account`, with no formatting or value translation.
+- Company-code approach (requirements confirmation): One fixed Spectrum `Company_Code` will be used for all customer invoices; its actual value is still unknown. Spectrum [`AddARInvoice`](https://help.trimble.com/doc/spectrum/spectrum/api-web-services/list-of-web-services/accounts-receivable-services/add-ar-invoice) requires a valid three-character company code.
+- Cost-center source: Always derive the `Income_Cost_Center` from the Business Unit on the ServiceTitan invoice; do not derive it from the linked job/project. Apply the mapped value consistently to every required invoice payload placement.
+- Batch fallback: When ServiceTitan `batchNumber` is blank, use the current date in `yyyyMMdd` format in the `America/New_York` timezone as Spectrum `Batch_Code`. This eight-character value fits Spectrum's 10-character limit.
+- GL account handling: The client has a GL-account list, but the mapping must be established individually using the ServiceTitan GL account ID/name and the corresponding Spectrum `GL_Account` code/description. Do not pass ServiceTitan `items[].glAccount` through as-is until that mapping is approved. Blank-source behavior remains as previously documented: leave `GL_Account` blank when it is optional and not mapped.
+- Tax-code mapping: ServiceTitan tax-zone IDs are system-specific and must not be passed directly to Spectrum. The observed ServiceTitan tax zone is named `In-House Sales`; obtain the equivalent Spectrum [`Sales_Tax_Code`](https://help.trimble.com/doc/spectrum/spectrum/api-web-services/list-of-web-services/accounts-receivable-services/add-ar-invoice) and map the zone by name.
+- Incremental checkpoint: Use ServiceTitan `modifiedOn` plus invoice ID as a composite ascending checkpoint in Gravity memory. Advance it only after the invoice has completed a safe outcome (created/exported, or intentionally skipped and alerted).
+- Backfill: Start the initial backfill at August 1 with no separate end date, then continue with the same hourly workflow and composite checkpoint.
+- Retry recovery: If Spectrum creates the invoice but the ServiceTitan exported-status write-back fails, first recover the Spectrum invoice by ServiceTitan invoice ID, then retry only the ServiceTitan write-back. Do not call `AddARInvoice` again.
+- Record-level exceptions: For an error inside the invoice loop, including an eligible invoice with no line items, send an alert, log the error, skip that invoice, and continue processing the remaining invoices. Validation and mapping failures are not retried automatically.
+- Operating assumptions: Use scheduled, paginated reads with a page size of 50. No client volume, rate-limit, or reconciliation-retention requirement is needed; Gravity run logs are the operational audit trail.
+- Retry queue: Use Gravity memory only. Queue transient app failures, retry them on the next hourly run up to three times, and alert after the last attempt. Validation and mapping failures are alerted and skipped; they are not retried automatically.
+- Access and test data: No sandbox access and no test records are currently available; this is not a client decision required for the build.
+- Failure-email contact: The only known contact is `aturner@stelco-electric.com`; Matheus could not confirm that this is the complete recipient list.
 
 ## Blocking Questions
 
 ### Required Header Values and Dependencies
 
-1. Which Spectrum `Company_Code` should be used for Stelco, and is it one fixed value or a mapping based on a ServiceTitan Business Unit, job, location, or other attribute?
-   Why it matters: `Company_Code` is required by `AddARInvoice` but is not included in the issue field map.
-   Implementation impact: This is a required header value for every request and belongs in the approved mapping/configuration.
+1. What is the single default Spectrum `Company_Code` for all Stelco customer invoices?
+   Why it matters: The fixed-default approach is confirmed, but `AddARInvoice` requires the actual valid three-character value.
+   Implementation impact: Store the approved value as integration configuration; do not derive it from a ServiceTitan attribute.
 
-2. Please provide the approved ServiceTitan Business Unit-to-Spectrum `Income_Cost_Center` mapping, including the behavior when the Business Unit is blank or unmapped.
+2. Please provide the approved ServiceTitan Business Unit ID/name to Spectrum `Income_Cost_Center` code/description mapping, including the behavior when the Business Unit is blank or unmapped.
    Why it matters: The issue requires a client-provided mapping; the source Business Unit alone does not define the correct Spectrum cost center.
    Implementation impact: Gravity needs a maintained lookup and a defined skip-or-fail outcome when a Business Unit is blank or unmapped.
 
-3. For a ServiceTitan invoice linked to a project/job, should the Spectrum cost center come from the linked Job’s Spectrum cost center, the ServiceTitan Business Unit mapping, or a precedence rule between both? Please confirm the intended header/detail placement as well.
-   Why it matters: The issue names both Job and Business Unit, while the referenced Spectrum/Agave guidance indicates project invoices may use the linked Job cost center.
-   Implementation impact: The map step and payload must apply one approved rule; conflicting cost-center sources should not be silently chosen.
+3. What is the Spectrum tax-zone ID/code (`Sales_Tax_Code`) for the tax zone equivalent to ServiceTitan's `In-House Sales` tax zone?
+   Why it matters: The ServiceTitan tax-zone ID is system-specific and cannot be used as the Spectrum code.
+   Implementation impact: Store the supplied Spectrum code in the approved tax mapping and use it when creating invoices.
 
-4. ServiceTitan `batchNumber` is optional. What should the workflow use for Spectrum `Batch_Code` when `batchNumber` is blank: an approved default/derived value, or a record-specific skip-and-notify path?
-   Why it matters: `Batch_Code` is required by Spectrum and affects AR grouping and reconciliation.
-   Implementation impact: The map step needs a defined fallback or validation branch before the Spectrum write.
-
-5. Please provide the approved `taxZoneId` to Spectrum `Sales_Tax_Code` mapping, including tax-exempt, blank, and unmapped values.
-   Why it matters: The issue requires tax-code validation but supplies no client mapping; the code also determines Spectrum’s tax treatment.
-   Implementation impact: Gravity needs a lookup/translation before payload construction and should not guess a tax code.
+4. Please provide the approved GL-account mapping list. For each ServiceTitan GL account ID/name, identify the corresponding Spectrum `GL_Account` code/description and confirm the behavior when there is no match.
+   Why it matters: GL accounts must be mapped by a stable identifier on both systems, not by a display name alone.
+   Implementation impact: Gravity needs a maintained lookup and must skip/alert an invoice line when no approved match exists.
 
 ### Line Items, Tax, and Credit Memos
 
@@ -56,60 +64,30 @@ MC-21983 defines an hourly, create-only one-way sync that creates Viewpoint Spec
    Why it matters: Spectrum requires positive line and sales-tax amounts even when the transaction is a credit memo.
    Implementation impact: The workflow must normalize signs and validate that the header/line totals reconcile before submission.
 
-3. What is the approved behavior when mapped values exceed Spectrum field limits, especially `number` / `Invoice_Or_Transaction` (10 characters), `summary` / `Remarks` (65), `items[].description` / `Detail_Description` (30), and GL account codes (12)?
+3. What is the approved behavior when mapped values exceed Spectrum field limits, especially `number` / `Invoice_Or_Transaction` (10 characters), `summary` / `Remarks` (65), `items[].description` / `Detail_Description` (30), and GL account codes (12)? This is especially needed for the client-provided GL mapping by stable ID/code.
    Why it matters: The issue mentions truncating remarks if necessary but does not define treatment for other constrained fields or the preservation of invoice uniqueness.
    Implementation impact: The integration needs approved normalization or a record-specific exception; it must not silently make an invoice number non-unique.
 
-### Incremental Processing and Backfill
-
-1. Which ServiceTitan date/cursor and stable tie-breaker should drive the hourly incremental query—for example, posted or modified timestamp plus invoice ID—and can multiple invoices share the same timestamp?
-   Why it matters: A timestamp-only checkpoint can skip or duplicate invoices when several records have the same value or when a posted invoice is later corrected.
-   Implementation impact: Use a paginated, composite checkpoint in Gravity memory and advance it only after an invoice has successfully completed its approved outcome.
-
-2. Is a historical invoice backfill required? If yes, what exact start/end date, expected volume, and reconciliation process should be used, and should it run separately before the hourly workflow is enabled?
-   Why it matters: Backfill volume, processing-period eligibility, and exception handling differ from ongoing invoice processing.
-   Implementation impact: A bounded separate run avoids overlap with the production checkpoint and permits controlled reconciliation.
-
 ### Exceptions, Notifications, and Acceptance
 
-1. For missing customer/job/Business Unit links, invalid tax or GL mappings, invalid AR/GL dates, or an unmatched duplicate, should Gravity skip the invoice and continue the batch, retry automatically, or stop the entire run? Who should receive the failure emails and own the correction?
-   Why it matters: The issue requires validation but does not define the operational decision after validation fails.
-   Implementation impact: Record-specific failures can use an error log plus `Continue Loop` when approved; authentication, source-query, or systemic Spectrum configuration failures should use `Stop Workflow` with an actionable email.
-
-2. What retry behavior is approved for an uncertain Spectrum response or a failure while marking ServiceTitan exported after Spectrum has already created the invoice?
-   Why it matters: Retrying the full sequence without a recovery lookup can produce duplicate Spectrum invoices or leave successfully created invoices unmarked in ServiceTitan.
-   Implementation impact: A recovery path should first locate the target invoice using the approved idempotency key, then retry only the safe incomplete action.
-
-3. Which test environment/credentials and representative invoices are available for approval: regular multi-line invoice, credit memo, job/project invoice, each Business Unit/cost center, taxed and tax-exempt invoice, missing dependency, and duplicate/retry scenario?
-   Why it matters: Financial mappings and exception behavior need evidence before go-live.
-   Implementation impact: These cases form the acceptance set for the mapping, recovery behavior, logs, and reconciliation.
-
-## Follow-Up Questions
-
-### Reconciliation and Operating Limits
-
-1. What daily and peak invoice volume, ServiceTitan/Spectrum API limits, Spectrum maintenance windows, and maximum acceptable sync delay should the hourly workflow support?
-   Why it matters: Cadence alone does not define a safe page size, run cap, or retry pacing.
-
-2. Which audit data should be retained or reported after each successful export—for example, ServiceTitan invoice ID/number, Spectrum invoice ID or GUID, company, batch, transaction type, totals, and export timestamp—and who reviews exceptions?
-   Why it matters: AR invoice reconciliation requires an auditable link across the two systems.
+1. Should `aturner@stelco-electric.com` receive every failure email or only specific exception types? Please identify any additional recipients.
+   Why it matters: Record-level failures will alert and continue, so the recipient list needs a clear owner.
+   Implementation impact: Configure the approved recipients on app-step failure emails.
 
 ## Suggested Assumptions To Confirm
 
-- Only `Posted`, not-yet-exported ServiceTitan invoices with an invoice date on or after August 1 are eligible. The behavior for invoices with no line items remains to be confirmed.
+- Only `Posted`, not-yet-exported ServiceTitan invoices with an invoice date on or after August 1 are eligible. An eligible invoice with no line items is alerted and skipped.
 - The workflow is confirmed as create-only in Spectrum. Corrections, voids, and credits after export are outside its scope and do not trigger a Spectrum update or credit memo.
-- If no different instruction is provided, assume invoice-specific validation failures are logged, emailed, and skipped so unrelated invoices continue; authentication, source-query, and Spectrum-wide configuration failures stop the workflow.
-- If no different instruction is provided, assume Gravity uses a scheduled, paginated read and a composite checkpoint stored in memory only after the invoice reaches a safe, reconciled outcome.
+- Invoice-specific validation failures are alerted, logged, and skipped so unrelated invoices continue; only transient app failures enter the Gravity-memory retry queue.
 
 ## Build-Readiness Checklist
 
 - [x] Eligibility filters and go-live cutoff are confirmed.
 - [x] Post-export lifecycle is confirmed as out of scope.
 - [x] ServiceTitan invoice ID, Gravity lookup, and duplicate-prevention behavior are confirmed.
-- [ ] `Company_Code`, batch behavior, customer/job dependencies, and Business Unit/Job cost-center precedence are confirmed.
-- [x] Optional GL account handling and exact-value Spectrum lookup are confirmed.
-- [ ] Tax-code, line-item, discount, credit-memo, and field-length mappings are approved.
+- [ ] Default `Company_Code` value and Business Unit-to-`Income_Cost_Center` mapping are confirmed.
+- [ ] GL-account mapping by stable ServiceTitan ID/Spectrum code is approved; blank optional GL-account behavior is confirmed.
+- [ ] Spectrum tax code for `In-House Sales`, line-item, discount, credit-memo, and field-length mappings are approved.
 - [ ] Tax allocation and total-reconciliation rules for multi-line invoices are confirmed.
-- [ ] Pagination, composite checkpoint, backfill scope, and run-volume limits are confirmed.
-- [ ] Record-level versus systemic failure behavior, retries, logs, and failure-email recipients are confirmed.
-- [ ] Test credentials, representative records, reconciliation evidence, and go-live approver are available.
+- [x] Pagination uses 50-record pages; `modifiedOn`/invoice-ID checkpoint and August 1 backfill are confirmed.
+- [x] Record-level failures alert, skip, and continue; transient app failures retry from Gravity memory on the next hourly run up to three times. Failure-email recipients remain open.

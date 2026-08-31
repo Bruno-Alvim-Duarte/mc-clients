@@ -313,6 +313,11 @@ if (originalAmount === 0) {
 
 const exchangeRate = convertedAmount / originalAmount;
 const convertedCategories = (settlement.categories || []).map(category => cloneCategory(category, exchangeRate));
+const convertedFbaInvoiceSettlementAmounts = (settlement.fbaInvoiceSettlementAmounts || []).map(item => ({
+  ...item,
+  originalArAmount: item.arAmount,
+  arAmount: convertAmount(item.arAmount, exchangeRate)
+}));
 const adjusted = applyRoundingAdjustment(convertedCategories, convertedAmount);
 const convertedDetailTotal = convertAmount(settlement.detailTotal, exchangeRate);
 const convertedTaxSummary = settlement.taxSummary
@@ -338,6 +343,7 @@ return [{
   detailTotal: convertedDetailTotal,
   reportDifference: roundMoney(convertedDetailTotal - convertedAmount),
   categories: adjusted.categories,
+  fbaInvoiceSettlementAmounts: convertedFbaInvoiceSettlementAmounts,
   cashSummary: {
     ...(settlement.cashSummary || {}),
     source: "Amazon Financial Event Group convertedTotal",

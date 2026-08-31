@@ -16,7 +16,8 @@ const CONFIG = {
   currencyByCode: {
     USD: "1"
   },
-  moneyTolerance: 0.01
+  moneyTolerance: 0.01,
+  journalEntryRoundingTolerance: 0.05
 };
 
 if (runtimeConfig.netsuite) {
@@ -30,6 +31,10 @@ if (runtimeConfig.netsuite) {
 
 if (runtimeConfig.behavior) {
   CONFIG.moneyTolerance = runtimeConfig.behavior.moneyTolerance || CONFIG.moneyTolerance;
+  CONFIG.journalEntryRoundingTolerance =
+    runtimeConfig.behavior.journalEntryRoundingTolerance ||
+    runtimeConfig.behavior.journalEntryBalanceTolerance ||
+    CONFIG.journalEntryRoundingTolerance;
 }
 
 function normalizeCurrency(value) {
@@ -218,6 +223,57 @@ function totalCredits(lines) {
   return roundMoney(lines.reduce((sum, line) => sum + Number(line.credit || 0), 0));
 }
 
+function isCashLine(line) {
+  return String(line.memo || "").indexOf(" - Cash deposit") !== -1;
+}
+
+function pickAdjustmentLine(lines, amountField, avoidCash) {
+  const candidates = lines
+    .map((line, index) => ({ line, index, amount: Number(line[amountField] || 0) }))
+    .filter(candidate => candidate.amount > 0)
+    .filter(candidate => !avoidCash || !isCashLine(candidate.line))
+    .sort((a, b) => b.amount - a.amount);
+
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+function applyJournalEntryRoundingAdjustment(lines, balanceDifference) {
+  const adjustment = roundMoney(Math.abs(balanceDifference));
+
+  if (adjustment === 0) {
+    return {
+      applied: false,
+      amount: 0,
+      lineIndex: null,
+      field: null,
+      direction: null
+    };
+  }
+
+  const creditSideIsShort = balanceDifference > 0;
+  const field = creditSideIsShort ? "credit" : "debit";
+  const preferredLine = pickAdjustmentLine(lines, field, true) || pickAdjustmentLine(lines, field, false);
+
+  if (!preferredLine) {
+    throw new Error(
+      `Unable to apply Journal Entry rounding adjustment for settlement ${settlement.settlementId}: no ${field} line exists`
+    );
+  }
+
+  preferredLine.line[field] = roundMoney(Number(preferredLine.line[field] || 0) + adjustment);
+  preferredLine.line.memo = `${preferredLine.line.memo || settlement.memo} - rounding adjustment ${field} +${adjustment.toFixed(2)}`;
+
+  return {
+    applied: true,
+    amount: adjustment,
+    lineIndex: preferredLine.index,
+    field,
+    direction: creditSideIsShort ? "increase_credit" : "increase_debit",
+    accountId: preferredLine.line.account && preferredLine.line.account.id || null,
+    originalDifference: balanceDifference
+  };
+}
+
 function getCurrencyId(currencyCode) {
   const normalizedCurrencyCode = normalizeCurrency(currencyCode);
   const matchingCode = Object.keys(CONFIG.currencyByCode || {}).find(code =>
@@ -245,7 +301,10 @@ const commonLineFields = {
   department: { id: CONFIG.departmentId },
   class: { id: CONFIG.classId },
   location: { id: CONFIG.locationId },
-  division: { id: CONFIG.divisionId }
+  division: { id: CONFIG.divisionId },
+  ...(runtimeConfig.netsuite && runtimeConfig.netsuite.journalEntryLineEntityId
+    ? { entity: { id: String(runtimeConfig.netsuite.journalEntryLineEntityId) } }
+    : {})
 };
 
 const lines = [];
@@ -272,10 +331,30 @@ for (const category of settlement.categories || []) {
 let totalDebitsAmount = totalDebits(lines);
 let totalCreditsAmount = totalCredits(lines);
 let balanceDifference = roundMoney(totalDebitsAmount - totalCreditsAmount);
+let journalEntryRoundingAdjustment = {
+  applied: false,
+  amount: 0,
+  lineIndex: null,
+  field: null,
+  direction: null
+};
 
-if (Math.abs(balanceDifference) > CONFIG.moneyTolerance) {
+if (Math.abs(balanceDifference) > CONFIG.journalEntryRoundingTolerance) {
   throw new Error(
     `Journal Entry remains unbalanced for settlement ${settlement.settlementId}: debits ${totalDebitsAmount}, credits ${totalCreditsAmount}, difference ${balanceDifference}`
+  );
+}
+
+if (balanceDifference !== 0) {
+  journalEntryRoundingAdjustment = applyJournalEntryRoundingAdjustment(lines, balanceDifference);
+  totalDebitsAmount = totalDebits(lines);
+  totalCreditsAmount = totalCredits(lines);
+  balanceDifference = roundMoney(totalDebitsAmount - totalCreditsAmount);
+}
+
+if (balanceDifference !== 0) {
+  throw new Error(
+    `Journal Entry remains unbalanced after rounding adjustment for settlement ${settlement.settlementId}: debits ${totalDebitsAmount}, credits ${totalCreditsAmount}, difference ${balanceDifference}`
   );
 }
 
@@ -315,6 +394,9 @@ return [{
   sourceCurrency: settlement.sourceCurrency || settlement.currency,
   originalCurrency: settlement.originalCurrency || settlement.currency,
   originalTotalAmount: settlement.originalTotalAmount,
+  journalEntryRoundingAdjustment,
+  amazonOrderIds: settlement.amazonOrderIds || [],
+  fbaInvoiceSettlementAmounts: settlement.fbaInvoiceSettlementAmounts || [],
   catchAllRows: settlement.catchAllRows || [],
   taxSummary: settlement.taxSummary,
   payload

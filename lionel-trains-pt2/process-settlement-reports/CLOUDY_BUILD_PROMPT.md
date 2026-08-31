@@ -16,11 +16,12 @@ Create a daily scheduled Gravity workflow that:
 3. Parses the tab-delimited settlement report.
 4. Categorizes all settlement rows into NetSuite GL categories.
 5. Searches NetSuite for an existing Journal Entry by settlement external ID.
-6. Skips the settlement if the Journal Entry already exists, unless there is a pending attachment retry.
+6. Skips the settlement if the Journal Entry already exists, unless there is a pending attachment or FBA invoice-application retry.
 7. Creates one NetSuite Journal Entry per settlement ID when no matching Journal Entry exists.
 8. Saves the settlement report file in NetSuite File Cabinet and attaches it to the Journal Entry.
-9. Sends failure emails when an app step fails.
-10. Stores only failed settlement attempts in Gravity memory or Key Value Storage. Do not store successfully processed settlements in memory.
+9. Applies the Journal Entry's Accounts Receivable credit to the matching open invoices created by FBA Invoice Sync.
+10. Sends failure emails when an app step fails.
+11. Stores only failed settlement attempts in Gravity memory or Key Value Storage. Do not store successfully processed settlements in memory.
 
 ## Connections
 
@@ -98,8 +99,8 @@ Use these NetSuite defaults:
 - Transaction date: Amazon `settlement-end-date`
 - Posting period: NetSuite default
 - Approval status: NetSuite default
-- AR entity/customer: none
-- Do not apply the Journal Entry against invoices. Only create the Journal Entry.
+- Populate the NetSuite Journal Entry line **Name** field for every line from the store-specific workflow argument `journalEntryLineEntityId`. The argument value is the NetSuite entity internal ID and must be valid for the selected entity type.
+- After the CSV attachment succeeds, apply the JE's Accounts Receivable credit to the matching open FBA invoices through a zero-dollar Customer Payment. Pass `fbaInvoiceCustomerInternalId` for each store; it must be the same Customer on the FBA invoices and JE AR line. The workflow may fall back to `journalEntryLineEntityId` only if it is that same Customer ID.
 
 ## Confirmed Accounts
 
@@ -310,6 +311,7 @@ Inside the loop:
 9. Map: `Parse Settlement Report TSV`
    - Use code snippet: `02_parse_settlement_report_tsv.js`
    - Replace input step keys with the actual runtime config, loop, Amazon document, and HTTP download step keys.
+   - The order-level AR amount must be net of linked promotion adjustments: classify `Order` / `ItemPrice` rows and `Order` / `Promotion` rows with an Amazon Order ID as Accounts Receivable. Do not classify those promotions as Amazon fees.
 
 10. Map: `Build Financial Event Group Search Request`
    - Use code snippet: `03_build_financial_event_group_search_request.js`
@@ -331,6 +333,7 @@ Inside the loop:
    - Replace input step keys with the actual runtime config, parse map, search request map, and Financial Event Group action keys.
    - For MXN settlements, match the Financial Event Group whose `fundTransferDate` equals the settlement `settlement-end-date`.
    - Calculate Amazon's exchange rate as `convertedTotal.currencyAmount / originalTotal.currencyAmount` and convert the settlement totals to USD.
+   - Retain each FBA order's source AR amount as `originalArAmount` and Amazon-converted USD AR amount as `arAmount`; they are required by the later invoice-application step.
    - If more than one group matches by date, use `originalTotal.currencyCode` and `originalTotal.currencyAmount` to disambiguate.
    - Run only in the `requiresCurrencyConversion = true` branch.
 
@@ -354,6 +357,7 @@ Inside the loop:
    - If multiple matches are found, save failure state, send/log failure, and continue loop.
    - If exactly one match exists and there is no pending attachment failure, log skip and continue loop.
    - If exactly one match exists and there is a pending attachment failure for this settlement, continue to attachment retry.
+   - If exactly one match exists and the pending failure is `apply_fba_invoices`, skip attachment and continue directly to FBA invoice application using that existing JE.
    - If no match exists, create the Journal Entry.
 
 18. NetSuite Execute Custom Code: `Create Journal Entry`
@@ -364,27 +368,39 @@ Inside the loop:
    - Use code snippet: `03_attach_settlement_csv.js`
    - Replace input step keys with the real runtime config, payload, create/search, and HTTP download step keys.
 
-20. Map: `Build Resolved Failure Memory Payload`
+20. NetSuite Execute Custom Code: `Apply FBA Invoices`
+   - Use code snippet: `04_apply_fba_invoices.js`.
+   - Replace input step keys with the real runtime config, payload, and create/search step keys.
+   - The code searches only by the Amazon Order ID stored as the FBA invoice's exact `externalid`. Do not fall back to `otherrefnum` or memo matching.
+   - When `currencyConversion.required = true`, correct every matched, untouched FBA invoice before creating the payment: multiply its item rates and shipping cost by Amazon's actual settlement `exchangeRate`. Require the current invoice total to equal the source `originalArAmount`; validate that the corrected total equals the converted `arAmount`. Never scale a partially applied invoice, and treat an already converted total as idempotent on retry.
+   - It creates a zero-dollar Customer Payment that applies both the matching JE credit and fully covered invoices. It must fail rather than partially pay an invoice.
+   - On failure, save a retry entry with `failurePhase = apply_fba_invoices`; on retry, do not reattach the CSV.
+
+21. If: `FBA Invoice Application Succeeded`
+   - If the application result has `success = true`, continue to resolve any prior failure state.
+   - If false, use the failure branch with `failurePhase = apply_fba_invoices`, then continue the settlement loop.
+
+22. Map: `Build Resolved Failure Memory Payload`
    - Use code snippet: `07_build_resolved_failure_memory_payload.js`
    - Use only if there was a prior failure array item to resolve.
    - It returns the same environment-scoped key and a new array with the current settlement removed.
-   - Replace input step keys with the real runtime config, payload, create, and attach step keys.
+   - Replace input step keys with the real runtime config, payload, create, attach, and FBA invoice-application step keys.
 
-21. Memory/KV: `Save Updated Failure Array`
+23. Memory/KV: `Save Updated Failure Array`
    - Key: output `key` from `Build Resolved Failure Memory Payload`
    - Value: the `value` array returned by `Build Resolved Failure Memory Payload`.
 
-22. Flow Control: `Log Settlement Success`
-   - Log created, skipped, or attachment retried.
+24. Flow Control: `Log Settlement Success`
+   - Log created, skipped, attachment retried, and FBA invoice application results.
 
 After the loop:
 
-23. Optional Memory: `Update Checkpoint`
+25. Optional Memory: `Update Checkpoint`
    - If implemented, update only after the full page/batch succeeds.
    - Do not use this as processed-settlement memory.
    - Do not let checkpointing prevent retrying failures saved in memory.
 
-24. Flow Control: `Log Batch Summary`
+26. Flow Control: `Log Batch Summary`
    - Include report count, processed count, skipped count, failure count if available.
 
 ## Code Snippets
@@ -404,6 +420,7 @@ Snippet mapping:
 - NetSuite `Search Existing Journal Entry`: `01_search_existing_journal_entry.js`
 - NetSuite `Create Journal Entry`: `02_create_journal_entry.js`
 - NetSuite `Attach Settlement CSV`: `03_attach_settlement_csv.js`
+- NetSuite `Apply FBA Invoices`: `04_apply_fba_invoices.js`
 
 ## Important Open Items
 
@@ -449,5 +466,5 @@ After creating or updating the workflow, review:
 5. NetSuite account IDs, department/class/location/division IDs, and File Cabinet folder ID.
 6. That successful settlements are not stored in memory.
 7. That failed settlements are saved in memory/KV for retry.
-8. That an existing NetSuite Journal Entry causes skip unless there is a pending CSV attachment retry.
+8. That an existing NetSuite Journal Entry causes skip unless there is a pending CSV attachment or FBA invoice-application retry.
 9. That tax rows are validated for zero net and not posted to the Journal Entry.

@@ -3,7 +3,7 @@
 Status: Not ready
 
 Summary:
-MC-21982 defines an hourly, create-only ServiceTitan-to-Viewpoint Spectrum payment sync. Payments created on or after August 1 are read in `createdAt` order and each payment creates one Spectrum Cash Receipt when it passes the required validation. The basic filter, validation behavior, payment-to-receipt relationship, composite checkpoint, and record-level failure handling are now defined. The workflow is still not build-ready because the `Reference_Number` mapping conflicts with the proposed payment-ID idempotency key, and customer association, receipt application payload, Spectrum lookup, and retry-queue details remain unresolved.
+MC-21982 defines an hourly, create-only ServiceTitan-to-Viewpoint Spectrum payment sync. Payments created on or after August 1 are read in `createdAt` order and each payment creates one Spectrum Cash Receipt when it passes the required validation. The lifecycle, loop-level exception behavior, retry mechanics, financial/date assumption, and prepayment scope are now defined. The workflow is still not build-ready because the payment-ID field-length constraint, actual default company code, receipt payload/balance rules, and final notification recipients remain unresolved.
 
 ## Confirmed Understanding
 
@@ -19,96 +19,62 @@ MC-21982 defines an hourly, create-only ServiceTitan-to-Viewpoint Spectrum payme
 
 - Eligibility: Process only payments created on or after August 1. The workflow is create-only; later modifications are out of scope.
 - Checkpoint: Use `createdAt` plus the ServiceTitan payment `id` as the composite filter, ascending sort, and Gravity-memory checkpoint for the hourly query.
-- Receipt validation: Before creating a receipt, validate the applicable required receipt data, including `checkNumber`, date, positive total, invoice application data, and `batch.number`. If validation fails, do not create a Spectrum receipt.
+- Receipt validation: Before creating a receipt, validate the applicable required receipt data, including payment ID, date, positive total, invoice application data, and `batch.number`. If validation fails, do not create a Spectrum receipt.
 - Invalid/reversal-like payments: Payments that do not meet the required validation, including negative or zero-dollar payments, are not created in Spectrum.
-- `Reference_Number`: Map ServiceTitan `checkNumber` to Spectrum `Reference_Number`.
+- `Reference_Number`: Map the ServiceTitan payment ID to Spectrum `Reference_Number`; do not use `checkNumber`. Verified current payment IDs fit Spectrum's 10-character limit, so no transformation is required.
 - Payment-to-receipt relationship: Each ServiceTitan payment maps to exactly one Spectrum Cash Receipt, including when the payment has multiple invoice applications.
-- Invoice matching: `Invoice_Number` alone is sufficient to match a Spectrum invoice; no additional customer, company, invoice-type, or other key validation is required for the match.
+- Invoice lookup key: `Invoice_Number` alone is sufficient to find the Spectrum invoice; no additional customer, company, invoice-type, or other key validation is required for the lookup.
 - Batch mapping: Treat `batch.number` as populated and valid for Spectrum `Batch_Code`; if it is blank, fail validation and do not create the receipt.
-- Record-level exceptions: Skip the payment, send a failure email, and add the record to a retry queue.
+- Record-level exceptions: Send an alert, log the error, skip the payment, and continue processing the loop. Validation and matching failures are not retried automatically.
 - Backfill: Include payments created on or after August 1, then continue using the hourly workflow and its `createdAt` checkpoint.
+- Missing customer: If the payment has no customer or the customer cannot be found, skip the payment and issue a warning. Do not create a non-customer cash receipt.
+- Invoice matching: If an invoice is not found, is closed, or has insufficient remaining balance, skip the whole payment and issue a warning.
+- Invoice type: All in-scope payments are associated with invoices. Set `Invoice_Type` to `I`; `P` is out of scope and no special future prepayment/overpayment process is required.
+- Company-code approach (requirements confirmation): One fixed Spectrum `Company_Code` will be used for all payments; its actual value is still unknown.
+- Documentation validation: Spectrum [`AddCash_Receipts`](https://help.trimble.com/en-gb/spectrum/spectrum/api-web-services/list-of-web-services/accounts-receivable-services/add-cash-receipts) limits `Reference_Number` to 10 characters and requires it to be unique with `Customer_Code`. Its documentation identifies this field as the check/reference number, but a payment ID can be used only if every ID fits the limit without truncation. The service can infer a customer from an invoice when `Customer_Code` is blank, but the approved workflow behavior is to skip/warn instead of relying on that fallback.
+- Post-creation lifecycle: This is a create-only workflow. Once Spectrum creates the Cash Receipt, later ServiceTitan voids, refunds, reversals, and other changes are explicitly out of scope and are not updated in Spectrum by this workflow.
+- Financial/date convention: Assume ServiceTitan amounts and dates already use the currency, timezone, and accounting-date convention required by Spectrum; no conversion is applied.
+- Operating assumptions: Use scheduled, paginated reads with a page size of 50. No client volume, rate-limit, or reconciliation-retention requirement is needed; Gravity run logs are the operational audit trail.
+- Retry queue: Use Gravity memory only. Queue transient app failures, retry them on the next hourly run up to three times, and alert after the last attempt. Validation and matching failures are alerted and skipped; they are not retried automatically.
+- Access and test data: No sandbox access and no test records are currently available; this is not a client decision required for the build.
+- Failure-email contact: The only known contact is `aturner@stelco-electric.com`; Matheus could not confirm that this is the complete recipient list.
 
 ## Blocking Questions
 
-### Payment Eligibility and Lifecycle
-
-1. Since the workflow reads only newly created payments, what is the approved accounting process if a payment is voided, refunded, reversed, or otherwise changed after its Spectrum Cash Receipt was created?
-   Why it matters: The workflow will not query later changes, and Spectrum cannot import reversal/adjustment receipts through this service.
-   Implementation impact: Document the manual or separate-integration reconciliation process; the create-only workflow must not try to alter the prior receipt.
-
-### Matching and Duplicate Prevention
-
-1. The approved field map says `checkNumber` → Spectrum `Reference_Number`, but the proposed duplicate-prevention decision says the ServiceTitan payment ID will be stored in that same field. Which value must actually be sent in `Reference_Number`, and where should the other value be retained?
-   Why it matters: One Spectrum field cannot reliably contain both values, and this decision directly affects reconciliation and idempotency.
-   Implementation impact: Use the ServiceTitan payment ID as the lookup/idempotency key only if Spectrum provides a separate searchable field or an approved mapping store. If `Reference_Number` is the only available key, decide whether it contains `checkNumber` or payment ID before build.
-
-2. `Invoice_Number` is confirmed as sufficient to match a Spectrum invoice. What should happen when that invoice is not found, is closed, or has an insufficient remaining balance?
-   Why it matters: The outcome for an unavailable or ineligible invoice is still needed to prevent an incorrect cash application or an unresolved receipt exception.
-   Implementation impact: Gravity will look up each invoice application by `Invoice_Number`. The record-level handling and all-or-nothing decision for the receipt remain open pending client confirmation.
-
 ### Receipt and Application Rules
 
-1. Each ServiceTitan payment maps to exactly one Spectrum Cash Receipt, including when it has multiple invoice applications. Is a customer/`Customer_Code` required or associated with that Cash Receipt? Please also confirm the required `AddCash_Receipts` header/detail payload structure and whether one request can contain all application lines.
-   Why it matters: The payment-to-receipt relationship is confirmed, but it is still unknown whether the Cash Receipt has a customer association and how multiple applications are sent to Spectrum.
-   Implementation impact: Gravity will build one Cash Receipt per payment. Whether it includes `Customer_Code` and whether it uses one aggregated request or separate application requests remain open pending client confirmation.
+1. Each ServiceTitan payment maps to exactly one Spectrum Cash Receipt, including when it has multiple invoice applications. A missing or unmatched customer will skip/warn, so please confirm the required `AddCash_Receipts` header/detail payload structure and whether one request can contain all application lines.
+   Why it matters: A customer-associated receipt is required by the approved exception behavior, but the aggregation shape is still unknown.
+   Implementation impact: Gravity will build one customer-specific Cash Receipt per payment; the request assembly remains open pending confirmation.
 
-2. Must the sum of all `appliedTo.appliedAmount` values equal `Transaction_Amount`? If not, how should an unapplied balance, partial payment, overpayment, or prepayment be represented, including the required `Invoice_Type` and any invoice number for that line?
-   Why it matters: The issue says invoice applications cannot exceed the receipt total and distinguishes `I` from `P`, but does not define the valid treatment of the remaining balance.
-   Implementation impact: The payload-validation map needs explicit balancing logic before the Spectrum write; an unapproved difference cannot be silently dropped.
+2. All in-scope payments are expected to apply fully to invoices and use `Invoice_Type = I`. Please confirm that the sum of `appliedTo.appliedAmount` must equal `Transaction_Amount`, and that any difference will be skipped/warned rather than sent as a partial payment, overpayment, or prepayment.
+   Why it matters: Spectrum can create an overpayment when the transaction amount exceeds the applied amount, but requirements state that such cases are not in scope.
+   Implementation impact: The payload-validation map should enforce a zero balance before the Spectrum write.
 
-3. Is `Invoice_Type` always `I` for existing ServiceTitan invoice applications, and which explicit business condition should cause `P` to be used? Please provide a sample approved payload for a prepayment/overpayment if it is in scope.
-   Why it matters: Setting the wrong invoice type can apply funds incorrectly or cause a Spectrum API rejection.
-   Implementation impact: Gravity needs a value-translation rule rather than an unconditional default.
+3. What is the single default Spectrum `Company_Code` for all Stelco payments?
+   Why it matters: The fixed-default approach is confirmed, but the actual valid company value is not. Spectrum can default this field from the Authorization ID when blank, but requirements should explicitly approve either that dependency or a supplied value.
+   Implementation impact: Store the approved value/configuration rule once; do not derive it from ServiceTitan data.
 
-4. Which Spectrum `Company_Code` should be used, and is it a fixed Stelco value or mapped from a ServiceTitan business unit, location, or other attribute?
-   Why it matters: The field map labels it as integration configuration but supplies no actual value or selection rule.
-   Implementation impact: The workflow cannot construct a complete, auditable receipt request without this value.
-
-
-### Incremental Processing and Backfill
-
-1. What are the expected daily and peak payment volumes, and are there ServiceTitan or Spectrum request limits, batch limits, maintenance windows, or posting-period cutoffs to respect?
-   Why it matters: The hourly cadence alone does not establish a safe page size or retry behavior.
-   Implementation impact: Gravity should page payments, process them in a loop, and cap each run if needed to avoid timeouts or API throttling.
 
 ### Exceptions, Notifications, and Acceptance
 
-1. A payment with missing required data, an unmatched customer/invoice, invalid batch, or an out-of-balance application total will be skipped, emailed, and placed in a retry queue. Where will this queue be stored, how often should it retry, what is the retry limit, and who owns the exception after the limit is reached?
-   Why it matters: Some validation failures cannot self-correct, so a queue without ownership or expiry can hide unreconciled payments.
-   Implementation impact: Gravity needs a retry-record schema and a separate retry path that preserves the payment ID, validation reason, attempt count, and last attempt timestamp.
-
-2. Who should receive failure emails, and which failures require an email versus a log only?
+1. Should `aturner@stelco-electric.com` receive every failure email or only selected exception types, and who else should receive them?
    Why it matters: Failures need an owner to protect AR reconciliation and prevent silent missed payments.
    Implementation impact: Configure actionable app-step error logs and email notifications, including the ServiceTitan payment ID, customer code, invoice references, batch, and Spectrum response/error when available.
 
-3. Which sandbox or production credentials will be used for testing, and can the client provide representative payments for: one invoice, multiple invoices, partial payment, overpayment/prepayment, missing reference, unmatched invoice, and a reversal/void?
-   Why it matters: The mapping and error rules require real examples to validate the Spectrum payload and reconciliation result.
-   Implementation impact: These cases form the minimum test and go-live acceptance set.
-
-## Follow-Up Questions
-
-### Reconciliation and Ownership
-
-1. After a Spectrum cash receipt is created, what reconciliation evidence should be retained or reported (for example, ServiceTitan payment ID, Spectrum receipt ID, batch code, and application totals), and who reviews exceptions?
-   Why it matters: Cash receipt integrations need a practical audit trail beyond the workflow's success status.
-
-2. Are ServiceTitan amounts and dates already in the same currency, timezone, and accounting-date convention required by Spectrum? If not, which system owns the conversion and posting-date rule?
-   Why it matters: The field map passes values directly but does not confirm financial/date normalization.
-
 ## Suggested Assumptions To Confirm
 
-- If no different instruction is provided, assume the ServiceTitan payment ID is retained in the retry queue and reconciliation logs, but is not sent in `Reference_Number` unless the `checkNumber` conflict is resolved.
-- If no different instruction is provided, assume payment-specific validation and lookup failures are logged, emailed, queued for retry, and skipped so unrelated payments can continue; authentication, source-query, and Spectrum-wide configuration failures stop the run.
+- The ServiceTitan payment ID is retained in Gravity-memory retry records and run logs and is sent directly in `Reference_Number`.
+- Payment-specific validation and lookup failures are alerted, logged, and skipped so unrelated payments can continue; only transient app failures enter the retry queue.
 
 ## Build-Readiness Checklist
 
 - [x] Payment eligibility filters and `createdAt` checkpoint are confirmed.
-- [ ] Post-creation change/void reconciliation process is confirmed.
-- [ ] `Reference_Number` mapping and duplicate-prevention key are reconciled.
-- [ ] Customer and invoice matching rules are confirmed.
-- [ ] Receipt header/detail payload, balancing, and prepayment rules are approved.
-- [ ] `Company_Code` and `Reference_Number` mapping are confirmed.
+- [x] Post-creation changes, voids, refunds, and reversals are explicitly out of scope.
+- [x] `Reference_Number` maps directly to the verified 10-character-or-less payment ID.
+- [x] Customer/invoice matching rules are confirmed: missing customer, missing/closed invoice, and insufficient balance are skip-and-warn.
+- [ ] Receipt header/detail payload and balancing rule are approved; `Invoice_Type = I` and no prepayment/overpayment handling are confirmed.
+- [ ] Default `Company_Code` value is confirmed.
 - [x] Composite `createdAt` plus payment-`id` checkpoint is confirmed; backfill begins August 1.
-- [x] Record-level validation failures are skipped, emailed, and queued for retry.
-- [ ] Retry-queue storage, retry limit, ownership, and notification recipients are confirmed.
-- [ ] Test credentials, representative data, reconciliation evidence, and go-live approver are available.
+- [x] Record-level validation failures alert, skip, and continue; transient app failures retry from Gravity memory on the next hourly run up to three times.
+- [ ] Failure-email recipients are confirmed.

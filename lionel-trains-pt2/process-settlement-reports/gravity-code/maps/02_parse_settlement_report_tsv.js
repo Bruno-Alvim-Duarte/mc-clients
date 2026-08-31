@@ -169,6 +169,7 @@ function classifyRow(row) {
   const transactionType = normalizeText(row["transaction-type"]);
   const transactionKey = normalizeKey(transactionType);
   const amountType = normalizeKey(row["amount-type"]);
+  const amazonOrderId = normalizeText(row["order-id"]);
   const description = normalizeText(row["amount-description"]);
   const descriptionKey = normalizeKey(description);
   const amount = Number(row.amountNumber || 0);
@@ -200,10 +201,18 @@ function classifyRow(row) {
     };
   }
 
-  if (transactionKey === "order" && amountType === "itemprice") {
+  const isOrderRevenue = transactionKey === "order" && amountType === "itemprice";
+  const isOrderPromotion =
+    transactionKey === "order" &&
+    amountType === "promotion" &&
+    amazonOrderId;
+
+  if (isOrderRevenue || isOrderPromotion) {
     return {
       category: "ACCOUNTS_RECEIVABLE",
-      reason: "Order item price non-tax amount",
+      reason: isOrderPromotion
+        ? "Order promotion non-tax adjustment"
+        : "Order item price non-tax amount",
       accountId: CONFIG.accountIds.accountsReceivable,
       includeInJournal: true
     };
@@ -387,6 +396,8 @@ const zeroAmountRows = [];
 const taxRows = [];
 const validations = [];
 const errors = [];
+const amazonOrderIds = new Set();
+const fbaInvoiceSettlementAmounts = {};
 
 function getCategory(category, accountId) {
   if (!categories[category]) {
@@ -407,6 +418,11 @@ function getCategory(category, accountId) {
 for (const row of detailRows) {
   const amount = Number(row.amountNumber || 0);
   const classification = classifyRow(row);
+    const amazonOrderId = normalizeText(row["order-id"]);
+
+  if (amazonOrderId) {
+    amazonOrderIds.add(amazonOrderId);
+  }
 
   if (classification.category === "ZERO_AMOUNT") {
     zeroAmountRows.push(row.__lineNumber);
@@ -448,6 +464,24 @@ for (const row of detailRows) {
     bucket.rowCount += 1;
     bucket.reasons[classification.reason] = (bucket.reasons[classification.reason] || 0) + 1;
     addAmount(bucket, amount);
+
+    // The net AR amount is what can be applied against invoices created by FBA
+    // Invoice Sync. This includes an order's ItemPrice revenue and its linked
+    // Promotion adjustments (for example, free-shipping discounts).
+    if (classification.category === "ACCOUNTS_RECEIVABLE" && amazonOrderId) {
+      if (!fbaInvoiceSettlementAmounts[amazonOrderId]) {
+        fbaInvoiceSettlementAmounts[amazonOrderId] = {
+          amazonOrderId,
+          arAmount: 0,
+          rowCount: 0
+        };
+      }
+
+      fbaInvoiceSettlementAmounts[amazonOrderId].arAmount = roundMoney(
+        fbaInvoiceSettlementAmounts[amazonOrderId].arAmount + amount
+      );
+      fbaInvoiceSettlementAmounts[amazonOrderId].rowCount += 1;
+    }
   }
 }
 
@@ -507,6 +541,10 @@ const settlement = {
   reportDifference,
   rowCount: rows.length,
   detailRowCount: detailRows.length,
+  amazonOrderIds: Array.from(amazonOrderIds).sort(),
+  fbaInvoiceSettlementAmounts: Object.keys(fbaInvoiceSettlementAmounts)
+    .sort()
+    .map(amazonOrderId => fbaInvoiceSettlementAmounts[amazonOrderId]),
   categories: Object.keys(categories).sort().map(category => categories[category]),
   cashSummary: {
     accountId: CONFIG.accountIds.cash,

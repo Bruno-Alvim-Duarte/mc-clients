@@ -55,14 +55,14 @@ function execute() {
     }
 
     const csvContent = getResponseBody(httpResponse);
-    const fileName = `amazon-settlement-${settlement.settlementId}.txt`;
+    const fileName = "amazon-settlement-" + settlement.settlementId + ".txt";
 
     const settlementFile = file.create({
       name: fileName,
       fileType: file.Type.PLAINTEXT,
       contents: csvContent,
       folder: CONFIG.fileCabinetFolderId,
-      description: `Amazon settlement report ${settlement.settlementId}`
+      description: "Amazon settlement report " + settlement.settlementId
     });
 
     const fileId = settlementFile.save();

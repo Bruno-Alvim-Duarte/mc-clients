@@ -7,6 +7,7 @@
 // - optional input.mapBuildJournalEntryPayload[0]
 // - optional input.netsuiteCreateJournalEntry[0]
 // - optional input.netsuiteAttachSettlementCsv[0]
+// - optional input.netsuiteApplyFbaInvoices[0]
 //
 // Replace step keys with actual Gravity keys after Cloudy creates the workflow.
 
@@ -16,12 +17,14 @@ const settlement = (input.mapXTUO || input.mapParseSettlementReportTsv || [])[0]
 const jePayload = (input.mapWLLK || [])[0] || {};
 const createResult = (input.netsuiteExecuteCustomCodeYDBY || [])[0] || {};
 const attachResult = (input.netsuiteExecuteCustomCode29SZ || [])[0] || {};
+const applyFbaInvoicesResult = (input.netsuiteApplyFbaInvoices || [])[0] || {};
 const existingFailureState =
   (input.keyValueStorageALAT?.value || [])
 const workflowArguments = input.workflowArguments || {};
 const failurePhase = workflowArguments.failurePhase || "unknown";
 const errorMessage =
   workflowArguments.errorMessage ||
+  applyFbaInvoicesResult.message ||
   attachResult.message ||
   createResult.message ||
   (settlement.errors || []).join("; ") ||
@@ -82,13 +85,16 @@ const failureEntry = {
     createResult.journalEntryId ||
     createResult.id ||
     attachResult.journalEntryId ||
+    applyFbaInvoicesResult.journalEntryId ||
     null,
   tranId: createResult.tranId || createResult.journalEntryNumber || null,
   failedAt: new Date().toISOString(),
   retryHint:
     failurePhase === "attach_csv"
       ? "Journal Entry may already exist. Retry CSV attachment against journalEntryId before creating another JE."
-      : "Retry from report document download and parse."
+      : failurePhase === "apply_fba_invoices"
+        ? "Journal Entry and CSV attachment may already exist. Retry applying its AR credit to matching FBA invoices."
+        : "Retry from report document download and parse."
 };
 
 const value = [

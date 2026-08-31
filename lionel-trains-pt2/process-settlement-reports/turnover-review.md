@@ -157,13 +157,13 @@ Sample file:
    Why it matters: NetSuite Accounts Receivable journal lines often require an entity, and applying a Journal Entry against open invoices usually depends on the entity.
    Implementation impact: Without this, the Journal Entry may not save or may not be applicable to invoices.
 
-   A: No it doesn't.
+   A: Yes. Pass the store-specific NetSuite Customer internal ID through `workflowArguments.fbaInvoiceCustomerInternalId` (or `journalEntryLineEntityId` when it is the same ID). The FBA invoices and the JE AR line must use that Customer.
 
 2. Should the workflow only create the Journal Entry, or should it also apply the Accounts Receivable credit against open invoices?
    Why it matters: "So it can be applied against open invoices" could mean manual application later or automated application now.
    Implementation impact: Automated application would require additional NetSuite SuiteScript logic beyond Journal Entry creation.
 
-   A: Only create the Journal Entry.
+   A: Apply the JE AR credit to the open FBA invoices at the end of the settlement workflow. Use a zero-dollar Customer Payment so the invoices are paid without adding a second cash posting. Match Amazon Order ID only by the FBA invoice external ID, which is the deterministic unique key. For a converted settlement, first update an untouched FBA invoice from the source AR amount to the USD amount using Amazon's actual settlement exchange rate; then apply the payment.
 
 3. Should posting period and approval status use NetSuite defaults, or should the workflow set them explicitly?
    Why it matters: The older planning doc says to use NetSuite defaults unless the client requires otherwise, but this should be confirmed before production posting.

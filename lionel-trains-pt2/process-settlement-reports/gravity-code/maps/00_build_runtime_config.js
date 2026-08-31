@@ -8,6 +8,11 @@ function normalizeText(value) {
   return String(value || "").trim();
 }
 
+const fbaInvoiceCustomerInternalId = normalizeText(
+  workflowArguments.fbaInvoiceCustomerInternalId ||
+  workflowArguments.journalEntryLineEntityId
+);
+
 function toCamelCase(value) {
   const words = normalizeText(value)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -57,11 +62,12 @@ const failureListKey = `${failureStoreName}_${failureListBaseKey}`;
 const config = {
   workflowName: "Amazon Settlement Reports to NetSuite Journal Entries",
   reportType: "GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2",
-  cutoffDate: workflowArguments.amazonSettlementCutoffDate || "2026-01-01T00:00:00.000Z",
+  cutoffDate: workflowArguments.amazonSettlementCutoffDate || "2026-06-01T00:00:00.000Z",
   errorRecipients: [
     "bruno@mindcloud.co",
     "AMiller@lionel.com",
     "jjones@lionel.com",
+    "MindCloud@lionelbrands.com",
     workflowArguments.storePersonEmail
   ].join(", "),
   netsuite: {
@@ -71,12 +77,18 @@ const config = {
     locationId: workflowArguments.locationID,
     classId: workflowArguments.classID,
     departmentId: "34",
+    // NetSuite's Journal Entry line field labelled "Name" is field ID "entity".
+    // Configure this per store with the internal ID of the Customer/Vendor/etc.
+    journalEntryLineEntityId: normalizeText(
+      workflowArguments.journalEntryLineEntityId || fbaInvoiceCustomerInternalId
+    ),
+    fbaInvoiceCustomerInternalId,
     currencyByCode: {
       "USD": "1"
     },
     accountIds: {
       accountsReceivable: "123",
-      cash: "1121",
+      cash: workflowArguments.cashAccountID,
       amazonSellingFees: "336",
       amazonFulfillmentFees: "434",
       amazonStorageFee: "523",
@@ -94,6 +106,8 @@ const config = {
     failWhenTaxDoesNotNetToZero: false,
     moneyTolerance: 0.01,
     journalEntryRoundingTolerance: 0.05,
+    // Maximum USD rounding adjustment allowed after scaling FBA invoice lines.
+    invoiceConversionRoundingAdjustmentLimit: 0.05,
     saveSuccessfulSettlementsInMemory: false,
     saveFailedSettlementsInMemory: true
   },

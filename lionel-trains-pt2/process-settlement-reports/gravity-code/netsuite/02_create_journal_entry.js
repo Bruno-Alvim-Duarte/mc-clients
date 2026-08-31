@@ -4,7 +4,7 @@
 //
 // Replace mapBuildJournalEntryPayload with the actual Gravity step key after Cloudy creates it.
 
-const settlement = ${JSON.stringify(input?.mapBuildJournalEntryPayload?.[0])};
+const settlement = ${JSON.stringify(input?.mapWLLK?.[0])};
 const payload = settlement && settlement.payload;
 
 function toNumber(value) {
@@ -152,6 +152,11 @@ function execute() {
 
       if (line.division && line.division.id) {
         setLineValueIfPresent(journalEntry, i, "csegdivision", Number(line.division.id));
+      }
+
+      // The "Name" column on a NetSuite Journal Entry line is the entity field.
+      if (line.entity && line.entity.id) {
+        setLineValueIfPresent(journalEntry, i, "entity", Number(line.entity.id));
       }
     }
 

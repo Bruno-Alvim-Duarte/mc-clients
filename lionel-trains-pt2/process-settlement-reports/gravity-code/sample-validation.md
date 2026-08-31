@@ -15,6 +15,9 @@ Validation date: 2026-07-21
 - Tax negative amount: `-2269.67`
 - Tax net amount: `0`
 - Catch-all rows: `88`
+- Distinct Amazon Order IDs: `721`
+- Orders with a positive Accounts Receivable settlement amount: `706`
+- Sum of per-order Accounts Receivable amounts: `30662.02` (matches the aggregated Accounts Receivable category)
 
 ## Aggregated Categories
 
@@ -36,6 +39,10 @@ The parser and payload builder were tested through `maps/00_build_runtime_config
 - Total debits: `30966.58`
 - Total credits: `30966.58`
 - Difference: `0`
+
+The per-order Accounts Receivable amounts are passed into the Journal Entry payload for the FBA invoice-application step. A Customer Payment is only saved when the matching open invoice's full balance is covered by that order's settlement AR amount.
+
+For a free-shipping order, the AR amount is calculated net of the linked promotion. For example: `Principal 759.51 + Shipping 142.41 + Promotion Shipping -142.41 = AR 759.51`. The promotion is not classified as an Amazon fee.
 
 ## Notes
 
